@@ -67,6 +67,28 @@ final class CoreTests: XCTestCase {
         }
     }
 
+    func testInputSchemesKeepPinyinActiveBetweenWords() {
+        var settings = Preferences()
+        settings.mixedPinyin = true
+        XCTAssertEqual(settings.inputScheme, .mixed)
+        settings.inputScheme = .pinyin
+        XCTAssertFalse(settings.mixedPinyin)
+        var state = Composition()
+        let lookup: (Composition.Mode, String) -> [Candidate] = { mode, code in
+            guard mode == .pinyin, code == "ni" else { return [] }
+            return [Candidate("你")]
+        }
+        for _ in 0..<2 {
+            _ = state.handle(.letter("n"), preferences: settings, lookup: lookup)
+            _ = state.handle(.letter("i"), preferences: settings, lookup: lookup)
+            XCTAssertEqual(state.mode, .pinyin)
+            XCTAssertEqual(state.handle(.space, preferences: settings, lookup: lookup).text, "你")
+        }
+        settings.inputScheme = .wubi
+        _ = state.handle(.letter("n"), preferences: settings, lookup: lookup)
+        XCTAssertEqual(state.mode, .wubi)
+    }
+
     func testContinuationsAppearBeforeFullCodeWithRemainingLetters() {
         let rows = lexicon.exact("ij")
         XCTAssertEqual(rows.first?.word, "浊")

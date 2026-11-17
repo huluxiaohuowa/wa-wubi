@@ -21,6 +21,18 @@ public enum RankingRange: String, Codable, Sendable {
     case ordinary, all
 }
 
+public enum InputScheme: String, CaseIterable, Sendable {
+    case wubi, pinyin, mixed
+
+    public var title: String {
+        switch self {
+        case .wubi: return "五笔"
+        case .pinyin: return "拼音"
+        case .mixed: return "五笔拼音混合"
+        }
+    }
+}
+
 public struct Preferences: Codable, Equatable, Sendable {
     public var theme = CandidateTheme.system
     public var punctuationOverrides: [String: String] = [:]
@@ -50,6 +62,15 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var cornerQuotes = false
     public var traditional = false
     public var mixedPinyin = false
+    public var pinyinOnly = false
+
+    public var inputScheme: InputScheme {
+        get { pinyinOnly ? .pinyin : (mixedPinyin ? .mixed : .wubi) }
+        set {
+            pinyinOnly = newValue == .pinyin
+            mixedPinyin = newValue == .mixed
+        }
+    }
     public var cloud = false
 
     public init() {}
@@ -208,6 +229,7 @@ public struct Composition {
                 code.append(character)
                 return Result()
             }
+            if !active, preferences.pinyinOnly { mode = .pinyin }
             let letter = Character(character.lowercased())
             if preferences.zFunction, mode == .wubi, code == "z", letter != "z", !last.isEmpty {
                 let repeated = last

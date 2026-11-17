@@ -19,7 +19,7 @@ WA 五笔是使用 Swift、InputMethodKit、AppKit 和 SwiftUI 开发的原生 m
 | `z` + 空格 / `zz` | 重复上次输入 / 符号 |
 | Control + 数字 / Control + Shift + 数字 | 候选置顶 / 隐藏 |
 | Control + `=` / Control + `-` | 快捷加词 / 隐藏最近输入的候选，亦可使用选中文本 |
-| Control + Option + Command + `]` | 词库管理 |
+| Control + Option + Command + `[` / `]` | 设置 / 用户词库 |
 | Control + Option + T | 切换简体和繁体输出 |
 | 按住 Control + Shift，松手 | 启用语音后，按住录音，松手转写到当前输入会话。可在「语音」里更改快捷键 |
 
@@ -36,6 +36,8 @@ WA 五笔是使用 Swift、InputMethodKit、AppKit 和 SwiftUI 开发的原生 m
 语音默认关闭。开启后可选择 Apple Speech、OpenAI、Groq、硅基流动或自定义 HTTPS 转写地址。自定义服务接收兼容 OpenAI 的 multipart `file`、`model`、`response_format`，返回 JSON `text`。
 
 Apple Speech 在系统支持时优先设备端识别，也可强制仅设备端。主动选用云服务时，松手后音频发往选中的服务。密钥保存在本机钥匙串，录音文件使用后移除。
+
+菜单栏的 WA 五笔菜单也可切换五笔、拼音、混合方案与输简出繁，并打开设置、用户词库和关于页面。
 
 ## 更新
 

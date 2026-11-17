@@ -204,7 +204,9 @@ struct SettingsView: View {
             Toggle("单引号选择候选第三项", isOn: pref(\.apostropheSelect))
             Toggle("四码唯一候选自动上屏", isOn: pref(\.autoCommit))
             Toggle("空码继续输入时转为英文", isOn: pref(\.emptyToEnglish))
-            Toggle("五笔与拼音混输", isOn: pref(\.mixedPinyin))
+            Picker("编码方案", selection: pref(\.inputScheme)) {
+                ForEach(InputScheme.allCases, id: \.self) { scheme in Text(scheme.title).tag(scheme) }
+            }
             Text("反引号进入临时拼音，候选旁显示五笔编码。").font(.caption).foregroundStyle(.secondary)
             Divider()
             Toggle("自动调序", isOn: pref(\.automaticallyRanks))

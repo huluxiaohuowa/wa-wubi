@@ -67,7 +67,7 @@ final class LibraryStore: ObservableObject {
                 self.lexicon = lexicon
                 self.loading = false
                 if text.isEmpty { self.status = "内置码表载入失败。" }
-                if self.preferences.mixedPinyin || !self.pinyinCallbacks.isEmpty { self.preparePinyin() }
+                if self.preferences.inputScheme != .wubi || !self.pinyinCallbacks.isEmpty { self.preparePinyin() }
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 40, repeats: true) { [weak self] _ in self?.sync() }
@@ -144,7 +144,7 @@ final class LibraryStore: ObservableObject {
         next.cloud = old.cloud
         guard next != old else { return }
         preferences = next
-        if next.mixedPinyin { preparePinyin() }
+        if next.inputScheme != .wubi { preparePinyin() }
         let encoder = JSONEncoder()
         if let before = try? encoder.encode(old), let after = try? encoder.encode(next),
            let original = try? JSONSerialization.jsonObject(with: before) as? [String: Any],
@@ -379,7 +379,7 @@ final class LibraryStore: ObservableObject {
                     self.setCloudEnabled(true)
                     self.reload()
                     self.cloudDirty = resolution != .replaceWithCloud
-                    if self.preferences.mixedPinyin { self.preparePinyin() }
+                    if self.preferences.inputScheme != .wubi { self.preparePinyin() }
                     self.status = "已启用 iCloud 同步。"
                     self.sync()
                 } catch {
@@ -399,7 +399,7 @@ final class LibraryStore: ObservableObject {
                 try save(backup, to: local)
                 snapshot = backup
                 reload()
-                if preferences.mixedPinyin { preparePinyin() }
+                if preferences.inputScheme != .wubi { preparePinyin() }
                 status = "同步已关闭，已恢复开启前的本机词库和设置。"
             } catch {
                 status = "无法恢复本机副本。当前词库和设置保持原样。"
@@ -447,7 +447,7 @@ final class LibraryStore: ObservableObject {
                     if let received, self.snapshot.merge(received) {
                         self.reload()
                         self.persist()
-                        if self.preferences.mixedPinyin { self.preparePinyin() }
+                        if self.preferences.inputScheme != .wubi { self.preparePinyin() }
                     }
                     self.status = "已读写 iCloud Drive，跨设备传输由系统完成。"
                 case .failure(let error):

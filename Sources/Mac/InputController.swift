@@ -11,6 +11,7 @@ final class InputController: IMKInputController {
     private let speech = SpeechCapture()
     private var state = Composition()
     private var shiftPressed = false
+    private var pinyinRefreshPending = false
     private var boundLanguage = false
     private var speaking = false
     private var speechFlags: NSEvent.ModifierFlags?
@@ -80,13 +81,8 @@ final class InputController: IMKInputController {
         if speechFlags != nil || speaking || statusText != nil { stopSpeech() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
-        if event.keyCode == 50, !state.active, !state.english {
-            store.preparePinyin { [weak self] in
-                guard let self, Self.activeController === self, self.state.mode == .pinyin,
-                      let target = self.client() else { return }
-                self.state.refresh(self.lookup)
-                self.draw(target)
-            }
+        if !state.english, store.preferences.inputScheme != .wubi || (event.keyCode == 50 && !state.active) {
+            warmPinyin()
         }
         guard let key = key(for: event) else {
             if state.active { apply(state.accept(index: state.selected), to: target); draw(target) }
@@ -108,6 +104,18 @@ final class InputController: IMKInputController {
         }
         draw(target)
         return result.handled
+    }
+
+    private func warmPinyin() {
+        guard !pinyinRefreshPending, !store.pinyinReady else { return }
+        pinyinRefreshPending = true
+        store.preparePinyin { [weak self] in
+            guard let self else { return }
+            self.pinyinRefreshPending = false
+            guard Self.activeController === self, self.state.active, let target = self.client() else { return }
+            self.state.refresh(self.lookup)
+            self.draw(target)
+        }
     }
 
     private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
@@ -242,9 +250,9 @@ final class InputController: IMKInputController {
     }
 
     private func shortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
-        if flags == [.control, .option, .command], event.keyCode == 30 {
-            SettingsWindow.shared.open(.lexicon)
-            return true
+        if flags == [.control, .option, .command] {
+            if event.keyCode == 33 { openSettings(nil); return true }
+            if event.keyCode == 30 { openLexicon(nil); return true }
         }
         if flags == [.control], event.keyCode == 47 {
             store.update { $0.chinesePunctuation.toggle() }
@@ -254,10 +262,7 @@ final class InputController: IMKInputController {
             return true
         }
         if flags == [.control, .option], event.keyCode == 17 {
-            store.update { $0.traditional.toggle() }
-            if store.preferences.modeHints {
-                notify(store.preferences.traditional ? "繁 · 輸簡出繁" : "简 · 简体", at: target)
-            }
+            toggleTraditional(nil)
             return true
         }
         if flags == [.control], event.keyCode == 24 || event.keyCode == 27 {
@@ -346,23 +351,63 @@ final class InputController: IMKInputController {
 
     override func menu() -> NSMenu! {
         let menu = NSMenu()
-        let items: [(String, Selector)] = [
-            ("WA 五笔设置…", #selector(openSettings(_:))),
-            ("词库管理…", #selector(openLexicon(_:))),
-            (state.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:))),
-            ("检查更新…", #selector(checkUpdates(_:))),
-            ("使用指南", #selector(openGuide(_:))),
-        ]
-        for (name, action) in items {
-            let item = NSMenuItem(title: name, action: action, keyEquivalent: "")
+        func add(_ title: String, _ action: Selector, key: String = "",
+                 modifiers: NSEvent.ModifierFlags = [], checked: Bool = false) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
             item.target = self
+            item.keyEquivalentModifierMask = modifiers
+            item.state = checked ? .on : .off
             menu.addItem(item)
         }
+
+        add("设置…", #selector(openSettings(_:)), key: "[", modifiers: [.control, .option, .command])
+        add("用户词库…", #selector(openLexicon(_:)), key: "]", modifiers: [.control, .option, .command])
+        menu.addItem(.separator())
+        let scheme = store.preferences.inputScheme
+        add(InputScheme.wubi.title, #selector(useWubi(_:)), checked: scheme == .wubi)
+        add(InputScheme.pinyin.title, #selector(usePinyin(_:)), checked: scheme == .pinyin)
+        add(InputScheme.mixed.title, #selector(useMixed(_:)), checked: scheme == .mixed)
+        menu.addItem(.separator())
+        add("输简出繁", #selector(toggleTraditional(_:)), key: "t", modifiers: [.control, .option],
+            checked: store.preferences.traditional)
+        add(state.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:)))
+        menu.addItem(.separator())
+        add("检查更新…", #selector(checkUpdates(_:)))
+        add("关于 WA 五笔", #selector(openAbout(_:)))
+        add("使用指南", #selector(openGuide(_:)))
         return menu
+    }
+
+    @objc private func useWubi(_ sender: Any?) { changeScheme(to: .wubi) }
+    @objc private func usePinyin(_ sender: Any?) { changeScheme(to: .pinyin) }
+    @objc private func useMixed(_ sender: Any?) { changeScheme(to: .mixed) }
+
+    private func changeScheme(to scheme: InputScheme) {
+        guard store.preferences.inputScheme != scheme || state.english else { return }
+        if state.english { toggleLanguage(nil) }
+        if let target = client(), state.active { apply(state.accept(index: state.selected), to: target) }
+        state.reset()
+        store.update { $0.inputScheme = scheme }
+        if let target = client() {
+            if store.preferences.modeHints { notify(scheme.title, at: target) }
+            else { draw(target) }
+        }
+    }
+
+    @objc private func toggleTraditional(_ sender: Any?) {
+        store.update { $0.traditional.toggle() }
+        if let target = client() {
+            if store.preferences.modeHints {
+                notify(store.preferences.traditional ? "繁 · 輸簡出繁" : "简 · 简体", at: target)
+            } else {
+                draw(target)
+            }
+        }
     }
 
     @objc private func openSettings(_ sender: Any?) { SettingsWindow.shared.open() }
     @objc private func openLexicon(_ sender: Any?) { SettingsWindow.shared.open(.lexicon) }
+    @objc private func openAbout(_ sender: Any?) { SettingsWindow.shared.open(.about) }
     @objc private func checkUpdates(_ sender: Any?) {
         SettingsWindow.shared.open(.updates)
         Task { @MainActor in UpdateManager.shared.check() }
