@@ -40,10 +40,15 @@ public enum SogouDirectory {
     }
 
     public static func parse(_ html: String) -> [SogouDictionary] {
-        let pattern = #"download_cell\.php\?id=([0-9]{1,10})(?:&|&amp;)name=([^&"'<>\r\n]+)"#
-        guard let matcher = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let download = #"download_cell\.php\?id=([0-9]{1,10})(?:&|&amp;)name=([^&"'<>\r\n]+)"#
+        let detail = #"<a\b[^<>]*href=["'](?:https://pinyin\.sogou\.com)?/dict/detail/index/([0-9]{1,10})(?:/)?(?:\?[^"'<>]*)?["'][^<>]*>\s*([^<>]+?)\s*</a>"#
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = (try? NSRegularExpression(pattern: download))?.matches(in: html, range: range) ?? []
+        let anchors = matches.isEmpty
+            ? (try? NSRegularExpression(pattern: detail))?.matches(in: html, range: range) ?? []
+            : matches
         var found = Set<String>()
-        return matcher.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { match in
+        return anchors.compactMap { match in
             guard let number = Range(match.range(at: 1), in: html), let title = Range(match.range(at: 2), in: html) else { return nil }
             let id = String(html[number])
             let raw = String(html[title])

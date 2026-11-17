@@ -80,7 +80,7 @@ final class SogouCatalog: ObservableObject {
         }
     }
 
-    private func download(_ url: URL, limit: Int, referer: URL? = nil) async throws -> Data {
+    nonisolated private func download(_ url: URL, limit: Int, referer: URL? = nil) async throws -> Data {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         if let referer { request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer") }
         let (bytes, response) = try await session.bytes(for: request)

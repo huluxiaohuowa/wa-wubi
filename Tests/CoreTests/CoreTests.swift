@@ -173,6 +173,8 @@ final class CoreTests: XCTestCase {
 
     func testSogouDirectoryParsesOfficialSearchResults() throws {
         XCTAssertTrue(try XCTUnwrap(SogouDirectory.search("法律")).absoluteString.contains("%B7%A8%C2%C9"))
+        let homepage = #"<div><a href="/dict/detail/index/123/?rf=dictindex">公开词库</a></div>"#
+        XCTAssertEqual(SogouDirectory.parse(homepage).first?.name, "公开词库")
         guard let path = ProcessInfo.processInfo.environment["WAWUBI_TEST_SOGOU_SEARCH"] else { return }
         let html = String(decoding: try Data(contentsOf: URL(fileURLWithPath: path)), as: UTF8.self)
         let rows = SogouDirectory.parse(html)

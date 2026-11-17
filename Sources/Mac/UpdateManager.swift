@@ -64,6 +64,7 @@ final class UpdateManager: ObservableObject {
         message = "正在下载并校验安装器…"
         Task {
             defer { busy = false }
+            var downloaded = false
             do {
                 let bytes = try await UpdateTransport.first(for: available.url) { url in
                     let data = try await fetch(url, max: available.bytes, api: false)
@@ -73,6 +74,7 @@ final class UpdateManager: ObservableObject {
                     }
                     return data
                 }
+                downloaded = true
                 let installer = try await Task.detached(priority: .utility) {
                     try Self.prepareInstaller(dmg: bytes, version: available.version)
                 }.value
@@ -82,12 +84,12 @@ final class UpdateManager: ObservableObject {
                     }
                 }
             } catch {
-                message = "下载或签名校验失败，请稍后重试。"
+                message = downloaded ? "安装器签名校验或解包失败。" : "各更新源下载失败，请稍后重试。"
             }
         }
     }
 
-    private func fetch(_ url: URL, max size: Int, api: Bool) async throws -> Data {
+    nonisolated private func fetch(_ url: URL, max size: Int, api: Bool) async throws -> Data {
         var request = URLRequest(url: url)
         if api {
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
