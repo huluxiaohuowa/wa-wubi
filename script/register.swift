@@ -2,8 +2,11 @@ import Carbon
 import Foundation
 
 let id = "top.fuluwa.inputmethod.Wubi86.Hans"
-let app = FileManager.default.homeDirectoryForCurrentUser
+let files = FileManager.default
+let shared = URL(fileURLWithPath: "/Library/Input Methods/WA 五笔.app", isDirectory: true)
+let user = files.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Input Methods/WA 五笔.app", isDirectory: true)
+let app = files.fileExists(atPath: shared.path) ? shared : user
 let status = TISRegisterInputSource(app as CFURL)
 guard status == noErr else {
     print("TIS registration failed (\(status))")

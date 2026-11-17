@@ -4,7 +4,7 @@ WA 五笔是使用 Swift、InputMethodKit、AppKit 和 SwiftUI 开发的原生 m
 
 ## 安装
 
-在 [GitHub Releases](https://github.com/huluxiaohuowa/wa-wubi/releases) 下载并打开 DMG，双击镜像里的「安装 WA 五笔」并点击「安装」。安装器将输入法放在当前用户的输入法目录，无需管理员权限。然后在「系统设置 → 键盘 → 文本输入 → 编辑」的简体中文类别添加 WA 五笔。首次安装后若列表还未刷新，注销再登录。
+在 [GitHub Releases](https://github.com/huluxiaohuowa/wa-wubi/releases) 下载并打开 DMG，双击镜像里的「安装 WA 五笔」并点击「安装」。安装需管理员授权，输入法放在 `/Library/Input Methods`，供本机所有账号使用。每个账号可从菜单栏选择 WA 五笔，或先在「系统设置 → 键盘 → 文本输入 → 编辑」的简体中文类别中添加。
 
 ## 使用
 
