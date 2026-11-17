@@ -66,6 +66,15 @@ public enum DictionaryImport {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), !trimmed.hasPrefix("["),
                   trimmed != "---", trimmed != "..." else { return nil }
+            if let equals = trimmed.firstIndex(of: "=") {
+                let columns = trimmed[..<equals].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                let word = trimmed[trimmed.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+                if let first = columns.first, Entry.validCode(first.lowercased()), !word.isEmpty,
+                   columns.count == 1 || (columns.count == 2 && Int(columns[1]) != nil) {
+                    let priority = columns.count == 2 ? max(0, 1000 - min(1000, max(0, Int(columns[1]) ?? 0))) : 0
+                    return (word, first.lowercased(), priority)
+                }
+            }
             let fields = trimmed.split(whereSeparator: { $0.isWhitespace || $0 == "," || $0 == "=" || $0 == "|" })
                 .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
             guard let first = fields.first, !first.isEmpty else { return nil }

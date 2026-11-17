@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import InputMethodKit
 import WubiCore
 
@@ -55,6 +56,15 @@ final class InputController: IMKInputController {
         guard let event, let target = sender as? IMKTextInput else { return false }
         if let active = Self.activeController, active !== self { return false }
         if Self.activeController == nil { Self.activeController = self }
+        if IsSecureEventInputEnabled() {
+            if state.active {
+                state.reset()
+                target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
+            }
+            shiftPressed = false
+            stopSpeech()
+            return false
+        }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
         guard event.type == .keyDown else { return false }

@@ -323,7 +323,6 @@ struct LexiconSettings: View {
             message = "已隐藏「\(word)」。"
         } else {
             store.add(word, code: typedCode)
-            store.edit(typedCode, word, pinned: true)
             message = "已添加「\(word)」。"
         }
         model.word = ""

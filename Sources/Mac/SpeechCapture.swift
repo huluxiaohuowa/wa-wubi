@@ -106,7 +106,15 @@ enum SpeechKeychain {
     }
 }
 
+private final class NoSpeechRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 final class SpeechCapture {
+    private static let uploadSession = URLSession(configuration: .ephemeral, delegate: NoSpeechRedirect(), delegateQueue: nil)
     private var recorder: AVAudioRecorder?
     private var recognition: SFSpeechRecognitionTask?
     private var network: URLSessionDataTask?
@@ -260,7 +268,7 @@ final class SpeechCapture {
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
         struct Transcript: Decodable { let text: String }
-        network = URLSession.shared.uploadTask(with: request, from: body) { [weak self] data, response, _ in
+        network = Self.uploadSession.uploadTask(with: request, from: body) { [weak self] data, response, _ in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let result: Result<String, Error>
             if (200..<300).contains(status), let data, let transcript = try? JSONDecoder().decode(Transcript.self, from: data) {

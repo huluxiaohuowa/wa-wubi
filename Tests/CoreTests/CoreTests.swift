@@ -52,6 +52,29 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try DictionaryImport.read(scel.dropLast(), extension: "scel", lexicon: lexicon))
     }
 
+    func testSogouTextAndTemporaryEnglishTools() throws {
+        let phrases = "ii,1=水火\noooo,2=火"
+        let imported = try DictionaryImport.read(Data(phrases.utf8), extension: "txt", lexicon: lexicon)
+        XCTAssertEqual(imported.entries.map(\.code), ["ii", "oooo"])
+        XCTAssertEqual(imported.entries.map(\.word), ["水火", "火"])
+        for (input, expected) in [("2026-11-17", "2026年11月17日"), ("12.45", "壹拾贰元肆角伍分")] {
+            var state = Composition()
+            _ = state.handle(.semicolon, preferences: Preferences()) { _, _ in [] }
+            for key in input {
+                _ = state.handle(.punctuation(key), preferences: Preferences()) { _, _ in [] }
+            }
+            XCTAssertEqual(state.handle(.returnKey, preferences: Preferences()) { _, _ in [] }.text, expected)
+        }
+    }
+
+    func testPublicSCELSampleWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["WAWUBI_TEST_SCEL"] else { return }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let imported = try DictionaryImport.read(data, extension: "scel", lexicon: lexicon)
+        XCTAssertGreaterThan(imported.entries.count, 0)
+        XCTAssertTrue(imported.entries.allSatisfy { Entry.validCode($0.code) })
+    }
+
     func testIndependentOfflineChangesMergeAndRemovalPersists() {
         var first = Snapshot()
         var second = Snapshot()

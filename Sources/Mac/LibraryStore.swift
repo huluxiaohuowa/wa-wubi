@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 import WubiCore
 
@@ -26,12 +27,14 @@ final class LibraryStore: ObservableObject {
     private(set) var lexicon = Lexicon([])
     private var pinyin: [String: [Candidate]] = [:]
     private var pinyinLoading = false
+    private var pinyinCallbacks: [() -> Void] = []
     private var extras: [String: [Entry]] = [:]
     private var edits: [String: [String: WordEdit]] = [:]
     private let device: String
     private let local = applicationSupport.appendingPathComponent("state.json")
     private var snapshot = Snapshot()
     private var cloudFolder: URL?
+    private var cloudIdentity: Data?
     private var timer: Timer?
     private var syncing = false
     private var cloudDirty = true
@@ -45,6 +48,7 @@ final class LibraryStore: ObservableObject {
            saved.version == Snapshot.format { snapshot = saved }
         preferences.cloud = defaults.bool(forKey: "syncEnabled")
         if let path = defaults.string(forKey: "syncPath") { cloudFolder = URL(fileURLWithPath: path, isDirectory: true) }
+        cloudIdentity = defaults.data(forKey: "syncIdentity")
         reload()
         DispatchQueue.global(qos: .userInitiated).async {
             let url = Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml")
@@ -54,7 +58,7 @@ final class LibraryStore: ObservableObject {
                 self.lexicon = lexicon
                 self.loading = false
                 if text.isEmpty { self.status = "内置码表载入失败。" }
-                if self.preferences.mixedPinyin { self.preparePinyin() }
+                if self.preferences.mixedPinyin || !self.pinyinCallbacks.isEmpty { self.preparePinyin() }
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 40, repeats: true) { [weak self] _ in self?.sync() }
@@ -63,9 +67,9 @@ final class LibraryStore: ObservableObject {
 
     func preparePinyin(completion: (() -> Void)? = nil) {
         if pinyinReady { completion?(); return }
-        guard !loading else { return }
+        if let completion { pinyinCallbacks.append(completion) }
+        guard !loading, !pinyinLoading else { return }
         let lexicon = lexicon
-        guard !pinyinLoading else { return }
         pinyinLoading = true
         DispatchQueue.global(qos: .utility).async {
             let index = lexicon.pinyinIndex()
@@ -73,7 +77,9 @@ final class LibraryStore: ObservableObject {
                 self.pinyin = index
                 self.pinyinReady = true
                 self.pinyinLoading = false
-                completion?()
+                let callbacks = self.pinyinCallbacks
+                self.pinyinCallbacks.removeAll()
+                callbacks.forEach { $0() }
             }
         }
     }
@@ -102,9 +108,9 @@ final class LibraryStore: ObservableObject {
            let original = try? JSONSerialization.jsonObject(with: before) as? [String: Any],
            let modified = try? JSONSerialization.jsonObject(with: after) as? [String: Any] {
             for (field, value) in modified where field != "cloud" {
-                guard let new = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+                guard let new = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]),
                       let previous = original[field],
-                      let old = try? JSONSerialization.data(withJSONObject: previous, options: .fragmentsAllowed),
+                      let old = try? JSONSerialization.data(withJSONObject: previous, options: [.fragmentsAllowed, .sortedKeys]),
                       new != old else { continue }
                 snapshot.set("pref/" + field, to: new, device: device)
             }
@@ -131,13 +137,12 @@ final class LibraryStore: ObservableObject {
         guard !group.entries.contains(where: { $0.word == word && $0.code == code }) else { return }
         let entry = Entry(word, code)
         set("personal/\(code)/\(word)", entry)
-        reload()
-        persist()
-        sync()
+        edit(code, word, pinned: true)
     }
 
     func remove(_ entry: Entry) {
         snapshot.set("personal/\(entry.code)/\(entry.word)", to: nil, device: device)
+        snapshot.set("edit/\(entry.code)/\(entry.word)", to: nil, device: device)
         reload()
         persist()
         sync()
@@ -228,23 +233,32 @@ final class LibraryStore: ObservableObject {
             let basePath = base.resolvingSymlinksInPath().path
             let drivePath = drive.resolvingSymlinksInPath().path
             guard basePath == drivePath || basePath.hasPrefix(drivePath + "/"),
-                  FileManager.default.ubiquityIdentityToken != nil else {
+                  let identity = currentCloudIdentity() else {
                 status = "请选择 iCloud Drive 内的文件夹，并确认已登录 iCloud。"
                 return
             }
             let folder = base.appendingPathComponent(Self.syncFolder, isDirectory: true)
             cloudFolder = folder
+            cloudIdentity = identity
             UserDefaults.standard.set(folder.path, forKey: "syncPath")
+            UserDefaults.standard.set(identity, forKey: "syncIdentity")
             cloudDirty = true
             if preferences.cloud { sync() }
             else { update { $0.cloud = true } }
         }
     }
 
+    private func currentCloudIdentity() -> Data? {
+        guard let token = FileManager.default.ubiquityIdentityToken,
+              let archive = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else { return nil }
+        return Data(SHA256.hash(data: archive))
+    }
+
     func sync() {
         guard preferences.cloud, !syncing else { return }
         guard let folder = cloudFolder else { status = "请选择 iCloud Drive 同步位置。"; return }
-        guard FileManager.default.ubiquityIdentityToken != nil else { status = "iCloud Drive 当前不可用。"; return }
+        guard let identity = currentCloudIdentity() else { status = "iCloud Drive 当前不可用。"; return }
+        guard identity == cloudIdentity else { status = "iCloud 帐户已变更，请重新选择同步位置。"; return }
         let incomingSizeLimit = 128 * 1024 * 1024
         syncing = true
         let sent = snapshot
@@ -280,6 +294,7 @@ final class LibraryStore: ObservableObject {
                     }
                 }
                 if write || !files.fileExists(atPath: ownFile.path) {
+                    guard self?.currentCloudIdentity() == identity else { throw CocoaError(.fileWriteNoPermission) }
                     let data = try JSONEncoder().encode(sent)
                     var accessError: NSError?
                     var writeError: Error?
