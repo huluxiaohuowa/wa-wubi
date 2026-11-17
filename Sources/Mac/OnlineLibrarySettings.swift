@@ -9,6 +9,7 @@ struct OnlineLibrarySettings: View {
     @StateObject private var sogou: SogouCatalog
     @State private var source = Source.all
     @State private var query = ""
+    @State private var category = ""
 
     init(store: LibraryStore, catalog: DictionaryCatalog) {
         self.store = store
@@ -34,17 +35,33 @@ struct OnlineLibrarySettings: View {
             .pickerStyle(.segmented)
             .onChange(of: source) { value in
                 query = ""
-                if value == .sogou { sogou.loadIfNeeded() }
+                if value == .sogou { category = ""; sogou.browse() }
             }
             HStack {
                 TextField(source == .sogou ? "搜索搜狗公开词库" : "搜索词库", text: $query)
-                    .onSubmit { if source == .sogou { sogou.search(query) } }
+                    .onSubmit { if source == .sogou { submitSearch() } }
+                    .onChange(of: query) { text in
+                        if source == .sogou && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            category = ""
+                            sogou.browse()
+                        }
+                    }
+                    .disabled(source == .sogou && sogou.installing)
                 if source == .sogou {
-                    Button("搜索") { sogou.search(query) }.disabled(sogou.busy)
+                    Button("搜索", action: submitSearch).disabled(sogou.installing)
                 }
             }
             if source == .sogou { sogouResults }
             else { packageResults }
+        }
+    }
+
+    private func submitSearch() {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            category = ""
+            sogou.browse()
+        } else {
+            sogou.search(query)
         }
     }
 
@@ -80,6 +97,14 @@ struct OnlineLibrarySettings: View {
 
     private var sogouResults: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if sogou.query.isEmpty && !sogou.categories.isEmpty {
+                Picker("搜狗分类", selection: $category) {
+                    Text("全部分类 · 推荐词库").tag("")
+                    ForEach(sogou.categories) { group in Text(group.name).tag(group.id) }
+                }
+                .disabled(sogou.installing)
+                .onChange(of: category) { sogou.browse(category: $0) }
+            }
             if !sogou.query.isEmpty { Text("搜索「\(sogou.query)」").font(.caption).foregroundStyle(.secondary) }
             ForEach(sogou.items) { item in
                 let installed = store.groups.contains { $0.id == "sogou-" + item.id }
@@ -91,13 +116,13 @@ struct OnlineLibrarySettings: View {
                         .disabled(sogou.busy || store.loading)
                 }
             }
-            if sogou.page > 1 || sogou.hasMore {
+            if sogou.previous != nil || sogou.next != nil {
                 HStack {
-                    Button("上一页") { sogou.search(sogou.query, page: sogou.page - 1) }
-                        .disabled(sogou.busy || sogou.page == 1)
+                    Button("上一页") { sogou.changePage(-1) }
+                        .disabled(sogou.busy || sogou.previous == nil)
                     Text("第 \(sogou.page) 页").font(.caption).monospacedDigit()
-                    Button("下一页") { sogou.search(sogou.query, page: sogou.page + 1) }
-                        .disabled(sogou.busy || !sogou.hasMore)
+                    Button("下一页") { sogou.changePage(1) }
+                        .disabled(sogou.busy || sogou.next == nil)
                 }
             }
             if !sogou.message.isEmpty { Text(sogou.message).font(.caption).foregroundStyle(.secondary) }

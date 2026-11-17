@@ -238,13 +238,12 @@ private struct CloudSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("iCloud Drive").font(.title3.weight(.semibold))
-            Text("在每台 Mac 上选择同一个 iCloud Drive 位置，同步词库、候选调整和输入偏好。")
+            Text("使用同一 Apple 账户的 Mac 可同步词库和输入偏好。首次开启时会自动准备 iCloud Drive 中的默认目录。")
                 .foregroundStyle(.secondary)
             Toggle("启用 iCloud 同步", isOn: Binding(
                 get: { store.preferences.cloud },
                 set: { value in
                     if value {
-                        if store.cloudFolder == nil, !store.chooseCloudFolder() { return }
                         resolution = .newest
                         enable = true
                     } else { disable = true }
@@ -252,10 +251,11 @@ private struct CloudSettings: View {
             ))
             .disabled(store.syncing)
             HStack {
-                Button("选择位置…") { store.chooseCloudFolder() }.disabled(store.preferences.cloud || store.syncing)
+                Button("自定义位置…") { store.chooseCloudFolder() }.disabled(store.preferences.cloud || store.syncing)
                 Button("立即同步") { store.sync() }.disabled(!store.preferences.cloud || store.syncing)
                 if store.syncing { ProgressView().controlSize(.small) }
             }
+            if let folder = store.cloudFolder { Text(folder.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
             if !store.status.isEmpty { Text(store.status).font(.callout).foregroundStyle(.secondary) }
             Text("语音服务及其密钥在每台 Mac 上单独设置。").font(.caption).foregroundStyle(.secondary)
         }
@@ -445,7 +445,10 @@ struct SpeechSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Toggle("启用按住说话", isOn: $store.speech.enabled)
-            Text("按住 Control + Shift 直到出现「正在聆听」，松手后自动转写上屏。")
+            Picker("按住说话快捷键", selection: $store.speech.shortcut) {
+                ForEach(SpeechShortcut.allCases) { shortcut in Text(shortcut.label).tag(shortcut) }
+            }
+            Text("按住 \(store.speech.shortcut.label) 直到出现「正在聆听」，松手后自动转写上屏。")
                 .foregroundStyle(.secondary)
             Picker("识别服务", selection: $store.speech.provider) {
                 ForEach(SpeechProvider.allCases) { provider in Text(provider.label).tag(provider) }

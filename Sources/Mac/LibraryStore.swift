@@ -304,11 +304,22 @@ final class LibraryStore: ObservableObject {
         try JSONEncoder().encode(state).write(to: url, options: .atomic)
     }
 
+    private var cloudDrive: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+    }
+
+    private func saveCloudLocation(_ folder: URL, identity: Data) {
+        cloudFolder = folder
+        cloudIdentity = identity
+        UserDefaults.standard.set(folder.path, forKey: "syncPath")
+        UserDefaults.standard.set(identity, forKey: "syncIdentity")
+    }
+
     @discardableResult
     func chooseCloudFolder() -> Bool {
         guard !preferences.cloud, !syncing else { return false }
-        let drive = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        let drive = cloudDrive
         let opener = NSOpenPanel()
         opener.canChooseFiles = false
         opener.canChooseDirectories = true
@@ -325,10 +336,7 @@ final class LibraryStore: ObservableObject {
                 return false
             }
             let folder = base.appendingPathComponent(Self.syncFolder, isDirectory: true)
-            cloudFolder = folder
-            cloudIdentity = identity
-            UserDefaults.standard.set(folder.path, forKey: "syncPath")
-            UserDefaults.standard.set(identity, forKey: "syncIdentity")
+            saveCloudLocation(folder, identity: identity)
             status = "同步位置已选定。"
             return true
         }
@@ -336,11 +344,17 @@ final class LibraryStore: ObservableObject {
     }
 
     func enableCloud(using resolution: CloudResolution) {
-        guard !preferences.cloud, !syncing, let folder = cloudFolder else { return }
-        guard let identity = currentCloudIdentity(), identity == cloudIdentity else {
-            status = "iCloud Drive 当前不可用，或帐户已变更。请重新选择同步位置。"
+        guard !preferences.cloud, !syncing else { return }
+        guard let identity = currentCloudIdentity(),
+              (try? cloudDrive.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            status = "iCloud Drive 当前不可用。请在系统设置中开启 iCloud Drive 后重试。"
             return
         }
+        if let cloudIdentity, identity != cloudIdentity {
+            status = "iCloud 帐户已变更。请选择此帐号的同步位置。"
+            return
+        }
+        let folder = cloudFolder ?? cloudDrive.appendingPathComponent(Self.syncFolder, isDirectory: true)
         syncing = true
         status = "正在读取 iCloud Drive 词库和设置…"
         DispatchQueue.global(qos: .utility).async {
@@ -361,6 +375,7 @@ final class LibraryStore: ObservableObject {
                     try self.save(self.snapshot, to: self.beforeCloud)
                     try self.save(settled, to: self.local)
                     self.snapshot = settled
+                    self.saveCloudLocation(folder, identity: identity)
                     self.setCloudEnabled(true)
                     self.reload()
                     self.cloudDirty = resolution != .replaceWithCloud

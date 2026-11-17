@@ -9,9 +9,13 @@ final class SogouCatalog: ObservableObject {
     @Published private(set) var message = ""
     @Published private(set) var busy = false
     @Published private(set) var page = 1
-    @Published private(set) var hasMore = false
+    @Published private(set) var categories: [SogouDirectory.Category] = []
+    @Published private(set) var installing = false
+    @Published private(set) var previous: URL?
+    @Published private(set) var next: URL?
     private(set) var query = ""
-    private var loaded = false
+    private var featured: [SogouDictionary]?
+    private var request: Task<Void, Never>?
     private let store: LibraryStore
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -22,42 +26,75 @@ final class SogouCatalog: ObservableObject {
 
     init(store: LibraryStore) { self.store = store }
 
-    func loadIfNeeded() {
-        if !loaded { search("") }
+    func browse(category id: String = "") {
+        if let category = categories.first(where: { $0.id == id }) {
+            load(category.url, term: "", page: 1)
+        } else {
+            load(SogouDirectory.home, term: "", page: 1)
+        }
     }
 
-    func search(_ term: String, page next: Int = 1) {
-        guard !busy else { return }
-        guard let url = SogouDirectory.search(term, page: next) else {
+    func search(_ term: String) {
+        let term = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = SogouDirectory.search(term) else {
             message = "请输入 80 字以内的关键词。"
             return
         }
-        query = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        page = next
+        load(url, term: term, page: 1)
+    }
+
+    func changePage(_ step: Int) {
+        guard let url = step < 0 ? previous : next else { return }
+        load(url, term: query, page: page + step)
+    }
+
+    private func load(_ url: URL, term: String, page number: Int) {
+        guard !installing else { return }
+        request?.cancel()
+        query = term
+        page = number
+        previous = nil
+        next = nil
+        if url == SogouDirectory.home, let featured {
+            request = nil
+            items = featured
+            message = ""
+            busy = false
+            return
+        }
         items = []
-        hasMore = false
         busy = true
         message = "正在读取搜狗词库…"
-        Task {
-            defer { busy = false }
+        request = Task {
+            defer {
+                if !Task.isCancelled { busy = false; request = nil }
+            }
             do {
                 let bytes = try await download(url, limit: 2_000_000)
+                try Task.checkCancellation()
                 let html = String(decoding: bytes, as: UTF8.self)
-                items = Array(SogouDirectory.parse(html).prefix(24))
-                hasMore = !query.isEmpty && SogouDirectory.hasNextPage(in: html, after: page)
-                loaded = true
+                items = SogouDirectory.parse(html)
+                if url == SogouDirectory.home {
+                    categories = SogouDirectory.categories(in: html)
+                    if !items.isEmpty || !categories.isEmpty { featured = items }
+                }
+                previous = SogouDirectory.pageLink(in: html, label: "上一页")
+                next = SogouDirectory.pageLink(in: html, label: "下一页")
                 message = items.isEmpty ? "这页没有找到可下载的词库。" : ""
-            } catch { message = "搜狗网站暂时不可用，可以打开官网重试。" }
+            } catch {
+                if !Task.isCancelled { message = "搜狗网站暂时不可用，可以打开官网重试。" }
+            }
         }
     }
 
     func install(_ item: SogouDictionary) {
         guard !busy, !store.loading else { return }
+        installing = true
         busy = true
         message = "正在下载并转换为 86 五笔编码…"
         let lexicon = store.lexicon
         Task {
-            defer { busy = false }
+            defer { installing = false; busy = false }
             for url in item.downloads {
                 do {
                     let bytes = try await download(url, limit: DictionaryImport.sizeLimit, referer: item.page)

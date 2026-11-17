@@ -173,14 +173,16 @@ final class CoreTests: XCTestCase {
 
     func testSogouDirectoryParsesOfficialSearchResults() throws {
         XCTAssertTrue(try XCTUnwrap(SogouDirectory.search("法律")).absoluteString.contains("%B7%A8%C2%C9"))
-        let homepage = #"<div><a href="/dict/detail/index/123/?rf=dictindex">公开词库</a></div>"#
+        let homepage = #"<div><a href="/dict/detail/index/123/?rf=dictindex">公开词库</a><a href="/dict/cate/index/36">分类</a></div>"#
         XCTAssertEqual(SogouDirectory.parse(homepage).first?.name, "公开词库")
+        XCTAssertEqual(SogouDirectory.categories(in: homepage).first?.name, "分类")
         guard let path = ProcessInfo.processInfo.environment["WAWUBI_TEST_SOGOU_SEARCH"] else { return }
         let html = String(decoding: try Data(contentsOf: URL(fileURLWithPath: path)), as: UTF8.self)
         let rows = SogouDirectory.parse(html)
         XCTAssertGreaterThan(rows.count, 5)
         XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
-        XCTAssertTrue(SogouDirectory.hasNextPage(in: html, after: 1))
+        XCTAssertEqual(try XCTUnwrap(SogouDirectory.pageLink(in: html, label: "下一页")).absoluteString,
+                       "https://pinyin.sogou.com/dict/search/search_list/%B7%A8%C2%C9/normal/2")
     }
 
     func testPublicSCELSampleWhenProvided() throws {

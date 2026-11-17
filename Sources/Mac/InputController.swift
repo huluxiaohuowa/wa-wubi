@@ -13,6 +13,8 @@ final class InputController: IMKInputController {
     private var shiftPressed = false
     private var boundLanguage = false
     private var speaking = false
+    private var speechFlags: NSEvent.ModifierFlags?
+    private var speechHold: DispatchWorkItem?
     private var statusText: String?
     private var statusClear: DispatchWorkItem?
     private var observation: NSObjectProtocol?
@@ -75,7 +77,7 @@ final class InputController: IMKInputController {
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
         guard event.type == .keyDown else { return false }
         shiftPressed = false
-        if speaking || statusText != nil { stopSpeech() }
+        if speechFlags != nil || speaking || statusText != nil { stopSpeech() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
         if event.keyCode == 50, !state.active, !state.english {
@@ -110,16 +112,31 @@ final class InputController: IMKInputController {
 
     private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         let isShift = event.keyCode == 56 || event.keyCode == 60
-        let isControl = event.keyCode == 59 || event.keyCode == 62
-        if (isShift || isControl), flags == [.control, .shift], store.speech.enabled {
+        if let held = speechFlags {
             shiftPressed = false
-            if !speaking { startSpeech(target) }
+            if !flags.contains(held) {
+                speechHold?.cancel()
+                speechHold = nil
+                speechFlags = nil
+                if speaking {
+                    speaking = false
+                    speech.release()
+                    if statusText == nil { CandidatePanel.shared.hide(for: self) }
+                }
+            }
             return false
         }
-        if speaking && !flags.contains([.control, .shift]) {
-            speaking = false
-            speech.release()
-            if statusText == nil { CandidatePanel.shared.hide(for: self) }
+        if store.speech.enabled, flags == store.speech.shortcut.flags {
+            shiftPressed = false
+            speechFlags = flags
+            let hold = DispatchWorkItem { [weak self] in
+                guard let self, Self.activeController === self, self.speechFlags == flags,
+                      self.store.speech.enabled, self.store.speech.shortcut.flags == flags else { return }
+                self.speechHold = nil
+                self.startSpeech(target)
+            }
+            speechHold = hold
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: hold)
             return false
         }
         guard isShift, store.preferences.shiftToggle else { shiftPressed = false; return false }
@@ -163,6 +180,9 @@ final class InputController: IMKInputController {
     }
 
     private func stopSpeech() {
+        speechHold?.cancel()
+        speechHold = nil
+        speechFlags = nil
         speech.cancel()
         speaking = false
         statusClear?.cancel()

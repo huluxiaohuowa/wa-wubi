@@ -60,7 +60,31 @@ public enum SogouDirectory {
         }
     }
 
-    public static func hasNextPage(in html: String, after page: Int) -> Bool {
-        html.contains("/normal/\(page + 1)\"") || html.contains("/normal/\(page + 1)'")
+    public struct Category: Identifiable, Equatable, Sendable {
+        public let id: String
+        public let name: String
+
+        public var url: URL { URL(string: "https://pinyin.sogou.com/dict/cate/index/" + id)! }
+    }
+
+    public static func categories(in html: String) -> [Category] {
+        let pattern = #"<a\b[^<>]*href=["'](?:https://pinyin\.sogou\.com)?/dict/cate/index/([0-9]{1,10})/?(?:\?[^"'<>]*)?["'][^<>]*>\s*([^<>]+?)\s*</a>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        var seen = Set<String>()
+        return regex.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { match in
+            guard let id = Range(match.range(at: 1), in: html),
+                  let name = Range(match.range(at: 2), in: html),
+                  seen.insert(String(html[id])).inserted else { return nil }
+            return Category(id: String(html[id]), name: html[name].trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    public static func pageLink(in html: String, label: String) -> URL? {
+        let pattern = #"href=["'](/dict/(?:cate/index/|search/search_list/)[^"'<>]+)["']>\s*"# +
+            NSRegularExpression.escapedPattern(for: label) + #"\s*</a>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let path = Range(match.range(at: 1), in: html) else { return nil }
+        return URL(string: String(html[path]), relativeTo: home)?.absoluteURL
     }
 }

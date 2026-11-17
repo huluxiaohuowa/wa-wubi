@@ -33,6 +33,28 @@ enum SpeechProvider: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+enum SpeechShortcut: String, CaseIterable, Identifiable, Codable {
+    case controlShift, controlOption, optionShift, commandShift, commandOption, controlCommand
+
+    var id: Self { self }
+
+    var flags: NSEvent.ModifierFlags {
+        switch self {
+        case .controlShift: return [.control, .shift]
+        case .controlOption: return [.control, .option]
+        case .optionShift: return [.option, .shift]
+        case .commandShift: return [.command, .shift]
+        case .commandOption: return [.command, .option]
+        case .controlCommand: return [.control, .command]
+        }
+    }
+
+    var label: String {
+        [(NSEvent.ModifierFlags.control, "Control"), (.option, "Option"), (.shift, "Shift"), (.command, "Command")]
+            .filter { flags.contains($0.0) }.map { $0.1 }.joined(separator: " + ")
+    }
+}
+
 struct SpeechConfiguration: Codable, Equatable {
     var enabled = false
     var provider = SpeechProvider.apple
@@ -40,6 +62,12 @@ struct SpeechConfiguration: Codable, Equatable {
     var endpoint = ""
     var model = ""
     var onDeviceOnly = false
+    private var holdShortcut: SpeechShortcut?
+
+    var shortcut: SpeechShortcut {
+        get { holdShortcut ?? .controlShift }
+        set { holdShortcut = newValue }
+    }
 
     static func load() -> Self {
         guard let data = UserDefaults.standard.data(forKey: "speechConfiguration"),
