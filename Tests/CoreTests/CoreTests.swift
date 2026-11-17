@@ -7,7 +7,7 @@ final class CoreTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Resources/wubi86.dict.yaml"), encoding: .utf8))
 
-    func testEveryKeyNameIsSecondAtOneKeyAndFirstAtFullCode() {
+    func testKeyNameOrderingAndSemicolon() {
         XCTAssertEqual(Lexicon.roots.count, 25)
         let keys: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
         let prefs = Preferences()
@@ -16,7 +16,9 @@ final class CoreTests: XCTestCase {
             let full = String(repeating: short, count: 4)
             let hiddenRoot = [name: WordEdit(name, pinned: true, hidden: true)]
             let shortRows = lexicon.exact(short, extra: [Entry(name, short)], edits: hiddenRoot)
-            XCTAssertEqual(shortRows.dropFirst().first?.word, name, short)
+            let position = ["a", "w"].contains(short) ? 0 : 1
+            XCTAssertEqual(shortRows[position].word, name, short)
+            XCTAssertEqual(shortRows[position].hint, "", short)
             XCTAssertEqual(shortRows.filter { $0.word == name }.count, 1, short)
             let fullRows = lexicon.exact(full, extra: [Entry(name, full)], edits: hiddenRoot)
             XCTAssertEqual(fullRows.first?.word, name, full)
@@ -135,7 +137,7 @@ final class CoreTests: XCTestCase {
     func testTextAndSCELImport() throws {
         let tsv = "水火\tiioo\t10\ntest\t测试\t3"
         let text = try DictionaryImport.read(Data(tsv.utf8), extension: "txt", lexicon: lexicon)
-        XCTAssertEqual(text.entries, [Entry("水火", "iioo", weight: 10), Entry("测试", "test", weight: 3)])
+        XCTAssertEqual(text.entries, [Entry("水火", "iioo", weight: 10), Entry("测试", try XCTUnwrap(lexicon.existingCode(for: "测试")), weight: 3)])
         var scel = Data(repeating: 0, count: 0x2628)
         scel.replaceSubrange(0..<8, with: [0x40, 0x15, 0, 0, 0x44, 0x43, 0x53, 1])
         scel.append(contentsOf: [1, 0, 2, 0, 0, 0, 4, 0])
@@ -149,7 +151,7 @@ final class CoreTests: XCTestCase {
     func testSogouTextAndTemporaryEnglishTools() throws {
         let phrases = "ii,1=水火\noooo,2=火"
         let imported = try DictionaryImport.read(Data(phrases.utf8), extension: "txt", lexicon: lexicon)
-        XCTAssertEqual(imported.entries.map(\.code), ["ii", "oooo"])
+        XCTAssertEqual(imported.entries.map(\.code), ["iioo", "oooo"])
         XCTAssertEqual(imported.entries.map(\.word), ["水火", "火"])
         for (input, expected) in [("2026-11-17", "2026年11月17日"), ("12.45", "壹拾贰元肆角伍分")] {
             var state = Composition()
@@ -159,6 +161,24 @@ final class CoreTests: XCTestCase {
             }
             XCTAssertEqual(state.handle(.returnKey, preferences: Preferences()) { _, _ in [] }.text, expected)
         }
+    }
+
+    func testImportKeepsExistingCodeForDuplicateWord() throws {
+        let data = Data("水火\tzabc\t4\n水火\tzzzz\t8\naaaa\t😀".utf8)
+        let result = try DictionaryImport.read(data, extension: "txt", lexicon: lexicon,
+                                               preferredCodes: ["水火": "iifg"])
+        XCTAssertEqual(result.entries.map(\.word), ["水火"])
+        XCTAssertEqual(result.entries.map(\.code), ["iifg"])
+    }
+
+    func testSogouDirectoryParsesOfficialSearchResults() throws {
+        XCTAssertTrue(try XCTUnwrap(SogouDirectory.search("法律")).absoluteString.contains("%B7%A8%C2%C9"))
+        guard let path = ProcessInfo.processInfo.environment["WAWUBI_TEST_SOGOU_SEARCH"] else { return }
+        let html = String(decoding: try Data(contentsOf: URL(fileURLWithPath: path)), as: UTF8.self)
+        let rows = SogouDirectory.parse(html)
+        XCTAssertGreaterThan(rows.count, 5)
+        XCTAssertEqual(Set(rows.map(\.id)).count, rows.count)
+        XCTAssertTrue(SogouDirectory.hasNextPage(in: html, after: 1))
     }
 
     func testPublicSCELSampleWhenProvided() throws {

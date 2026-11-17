@@ -27,12 +27,14 @@ final class SettingsWindow: ObservableObject {
     @Published var page = SettingsPage.appearance
     @Published var word = ""
     @Published var deleteWord = false
+    @Published var requestID = UUID()
     private var window: NSWindow?
 
     func open(_ page: SettingsPage = .appearance, word: String = "", delete: Bool = false) {
         self.page = page
         self.word = word
         self.deleteWord = delete
+        self.requestID = UUID()
         if window == nil {
             let controller = NSHostingController(rootView: SettingsView(model: self))
             let window = NSWindow(contentViewController: controller)
@@ -301,25 +303,30 @@ struct LexiconSettings: View {
     @ObservedObject var model: SettingsWindow
     @ObservedObject var store: LibraryStore
     @ObservedObject var catalog: DictionaryCatalog
-    @State private var code = ""
+    @State private var manualCode: String?
     @State private var message = ""
     @State private var busy = false
     @State private var remove: WordGroup?
     @State private var personalExpanded = false
     @State private var editingPersonal = false
-    @State private var editorText = ""
-    @State private var editorError = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Button("导入词库…", action: open)
-                Button("编辑用户词库…") { openPersonalEditor() }
+                Button("编辑用户词库…") { editingPersonal = true }
                 Text("SCEL、Rime YAML、TXT、TSV、CSV").font(.caption).foregroundStyle(.secondary)
             }.disabled(busy || store.loading)
             HStack {
                 TextField("字或词", text: $model.word).frame(maxWidth: 164)
-                TextField("86 五笔编码", text: $code).frame(maxWidth: 112)
+                TextField("86 五笔编码", text: Binding(
+                    get: { manualCode ?? inferredCode ?? "" },
+                    set: { manualCode = $0.lowercased() }
+                )).frame(maxWidth: 112)
+                if manualCode != nil {
+                    Button { manualCode = nil } label: { Image(systemName: "arrow.counterclockwise") }
+                        .buttonStyle(.borderless).help("恢复自动编码")
+                }
                 Button(model.deleteWord ? "隐藏候选" : "添加") { saveWord() }
                     .disabled(model.word.trimmingCharacters(in: .whitespaces).isEmpty || store.loading)
                 if model.deleteWord { Button("取消") { model.deleteWord = false } }
@@ -357,86 +364,30 @@ struct LexiconSettings: View {
                 }
             }
             Divider()
-            HStack {
-                Text("在线词库").font(.headline)
-                Spacer()
-                Button("检查更新") { catalog.refresh() }.disabled(catalog.busy)
-            }
-            ForEach(catalog.items) { item in
-                let installed = store.groups.first { $0.id == "catalog-" + item.id }
-                HStack {
-                    Text(item.name)
-                    Link("来源", destination: item.source).font(.caption)
-                    Spacer()
-                    if installed?.version == item.version {
-                        Label("已安装", systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Button(installed == nil ? "安装" : "更新") { catalog.install(item) }
-                            .disabled(catalog.busy || store.loading)
-                    }
-                }
-            }
-            if !catalog.message.isEmpty { Text(catalog.message).font(.caption).foregroundStyle(.secondary) }
+            OnlineLibrarySettings(store: store, catalog: catalog)
         }
-        .onAppear { catalog.refresh(automatic: true); inferCode() }
+        .onAppear { catalog.refresh(automatic: true) }
+        .onChange(of: model.requestID) { _ in manualCode = nil }
         .sheet(isPresented: $editingPersonal) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("编辑用户词库").font(.title2.weight(.semibold))
-                Text("每行先输入 1 至 4 位五笔编码，再输入一个或多个词条，中间用空格或 Tab 分隔。")
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $editorText).font(.body.monospaced())
-                    .frame(minHeight: 230).border(.secondary.opacity(0.25))
-                    .accessibilityLabel("用户词库文本")
-                if !editorError.isEmpty { Text(editorError).foregroundStyle(.red) }
-                HStack {
-                    Spacer()
-                    Button("取消") { editingPersonal = false }.keyboardShortcut(.cancelAction)
-                    Button("保存") { savePersonalEditor() }.keyboardShortcut(.defaultAction)
-                }
-            }.padding(24).frame(width: 505)
+            PersonalWordEditor(entries: store.groups.first { $0.id == "personal" }?.entries ?? [],
+                               lexicon: store.lexicon) { entries in
+                store.replacePersonal(with: entries)
+                message = "已保存用户词库。"
+            }
         }
-        .onChange(of: model.word) { _ in inferCode() }
         .alert("移除词库？", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } })) {
             Button("移除", role: .destructive) { if let remove { store.remove(remove) }; remove = nil }
             Button("取消", role: .cancel) { remove = nil }
         } message: { Text("移除后，其他启用了 iCloud 同步的 Mac 也会更新。") }
     }
 
-    private func openPersonalEditor() {
-        let entries = store.groups.first(where: { $0.id == "personal" })?.entries ?? []
-        editorText = entries.map { "\($0.code)\t\($0.word)" }.joined(separator: "\n")
-        editorError = ""
-        editingPersonal = true
-    }
-
-    private func savePersonalEditor() {
-        guard editorText.utf8.count < 2 * 1024 * 1024 else {
-            editorError = "编辑内容不能超过 2 MB。"
-            return
-        }
-        var entries: [Entry] = []
-        for (index, line) in editorText.components(separatedBy: .newlines).enumerated() {
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard let code = fields.first.map(String.init) else { continue }
-            if code.hasPrefix("#") { continue }
-            guard Entry.validCode(code), fields.count > 1, fields.dropFirst().allSatisfy({ $0.count <= 64 }) else {
-                editorError = "第 \(index + 1) 行格式有误，请检查编码与词条。"
-                return
-            }
-            entries += fields.dropFirst().map { Entry(String($0), code) }
-        }
-        store.replacePersonal(with: entries)
-        editingPersonal = false
-        message = "已保存用户词库。"
-    }
-
-    private func inferCode() {
-        code = store.lexicon.fullCode(for: model.word.trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+    private var inferredCode: String? {
+        store.lexicon.fullCode(for: model.word.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func saveWord() {
         let word = model.word.trimmingCharacters(in: .whitespacesAndNewlines)
-        let typedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let typedCode = (manualCode ?? inferredCode ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard word.count <= 64, !word.isEmpty, Entry.validCode(typedCode) else {
             message = "请输入 1 至 4 位小写英文字母作为编码。"
             return
@@ -449,7 +400,7 @@ struct LexiconSettings: View {
             message = "已添加「\(word)」。"
         }
         model.word = ""
-        code = ""
+        manualCode = nil
         model.deleteWord = false
     }
 
@@ -466,12 +417,13 @@ struct LexiconSettings: View {
             var messages: [String] = []
             for url in urls {
                 do {
+                    let known = store.preferredImportCodes
                     let (result, id) = try await Task.detached(priority: .utility) {
                         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                         guard size <= DictionaryImport.sizeLimit else { throw ImportFailure.tooLarge }
                         let data = try Data(contentsOf: url)
                         let id = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                        return (try DictionaryImport.read(data, extension: url.pathExtension, lexicon: lexicon), id)
+                        return (try DictionaryImport.read(data, extension: url.pathExtension, lexicon: lexicon, preferredCodes: known), id)
                     }.value
                     store.install(WordGroup(id: "import-" + id, name: url.deletingPathExtension().lastPathComponent, entries: result.entries))
                     messages.append("已导入 \(result.entries.count) 条，跳过 \(result.skipped) 条。")

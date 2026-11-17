@@ -178,7 +178,14 @@ public struct Composition {
             selected = index % pageSize
         case .semicolon:
             if mode == .english { code += ";" }
-            else if !candidates.isEmpty, preferences.semicolonSelect { return accept(index: 1, fallback: false) }
+            else if !candidates.isEmpty, preferences.semicolonSelect {
+                if mode == .wubi, Lexicon.coincidentShortcuts.contains(code),
+                   let key = code.first, let root = Lexicon.roots[key],
+                   let index = visible.firstIndex(where: { $0.word == root }) {
+                    return accept(index: index, fallback: false)
+                }
+                return accept(index: 1, fallback: false)
+            }
             else if !active && preferences.semicolonMode { mode = .english }
             else { return punctuate(";", preferences: preferences) }
         case .apostrophe:

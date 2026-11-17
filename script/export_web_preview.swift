@@ -26,6 +26,7 @@ enum ExportPreview {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try encoder.encode(Lexicon.coincidentShortcuts.sorted()).write(to: output.appendingPathComponent("shortcuts.json"), options: .atomic)
         for (key, rows) in expected {
             try encoder.encode(rows).write(to: output.appendingPathComponent("\(key).json"), options: .atomic)
         }

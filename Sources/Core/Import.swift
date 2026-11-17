@@ -20,7 +20,8 @@ public struct ImportResult {
 public enum DictionaryImport {
     public static let sizeLimit = 32 * 1024 * 1024
 
-    public static func read(_ data: Data, extension fileExtension: String, lexicon: Lexicon) throws -> ImportResult {
+    public static func read(_ data: Data, extension fileExtension: String, lexicon: Lexicon,
+                            preferredCodes: [String: String] = [:]) throws -> ImportResult {
         guard data.count <= sizeLimit else { throw ImportFailure.tooLarge }
         let fileExtension = fileExtension.lowercased()
         let raw: [(String, String?, Int)]
@@ -33,13 +34,13 @@ public enum DictionaryImport {
         var rows: [Entry] = []
         var skipped = 0
         var seen: Set<String> = []
-        for (word, supplied, weight) in raw {
-            guard word.count <= 64, let code = supplied ?? lexicon.fullCode(for: word),
+        for (word, _, weight) in raw {
+            guard word.count <= 64, let code = preferredCodes[word] ?? lexicon.existingCode(for: word) ?? lexicon.fullCode(for: word),
                   Entry.validCode(code) else {
                 skipped += 1
                 continue
             }
-            if seen.insert(code + "\t" + word).inserted { rows.append(Entry(word, code, weight: weight)) }
+            if seen.insert(word).inserted { rows.append(Entry(word, code, weight: weight)) }
         }
         guard !rows.isEmpty else { throw ImportFailure.empty }
         return ImportResult(entries: rows, skipped: skipped)

@@ -70,8 +70,9 @@ final class DictionaryCatalog: ObservableObject {
                     guard digest == item.sha256 else { throw ImportFailure.invalid }
                     return data
                 }
+                let known = store.preferredImportCodes
                 let result = try await Task.detached(priority: .utility) {
-                    try DictionaryImport.read(data, extension: "tsv", lexicon: lexicon)
+                    try DictionaryImport.read(data, extension: "tsv", lexicon: lexicon, preferredCodes: known)
                 }.value
                 store.install(WordGroup(id: "catalog-" + item.id, name: item.name,
                                         entries: result.entries, version: item.version))
@@ -91,7 +92,7 @@ final class DictionaryCatalog: ObservableObject {
     }
 
     private func download(_ url: URL, limit: Int) async throws -> Data {
-        let (bytes, response) = try await session.bytes(from: url)
+        let (bytes, response) = try await session.bytes(for: URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.url?.scheme == "https", http.expectedContentLength <= limit else { throw ImportFailure.invalid }
         var data = Data()

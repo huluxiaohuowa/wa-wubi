@@ -36,10 +36,13 @@ public final class Lexicon: @unchecked Sendable {
         "u": "立", "v": "女", "w": "人", "x": "纟", "y": "言",
     ]
 
+    public static let coincidentShortcuts: Set<String> = ["a", "w"]
+
     private let table: [String: [Entry]]
     private let stems: [String: String]
     private let sortedCodes: [String]
     private let fixedWords: Set<String>
+    private let existingCodes: [String: String]
 
     public init(_ entries: [Entry], stems suppliedStems: [String: String] = [:]) {
         table = Dictionary(grouping: entries, by: \.code).mapValues { rows in
@@ -49,6 +52,16 @@ public final class Lexicon: @unchecked Sendable {
         }
         sortedCodes = table.keys.sorted()
         fixedWords = Set(Self.roots.values).union(entries.lazy.filter { $0.code.count == 1 }.map(\.word))
+        var canonical: [String: Entry] = [:]
+        for entry in entries {
+            if let current = canonical[entry.word] {
+                if entry.code.count < current.code.count { continue }
+                if entry.code.count == current.code.count &&
+                    (entry.weight < current.weight || (entry.weight == current.weight && entry.code >= current.code)) { continue }
+            }
+            canonical[entry.word] = entry
+        }
+        existingCodes = canonical.mapValues(\.code)
         var stems = suppliedStems
         for entry in entries where entry.word.count == 1 && entry.code.count >= 2 {
             if stems[entry.word, default: ""].count < entry.code.count {
@@ -75,6 +88,8 @@ public final class Lexicon: @unchecked Sendable {
         }
         return Lexicon(rows, stems: stems)
     }
+
+    public func existingCode(for word: String) -> String? { existingCodes[word] }
 
     public func fullCode(for word: String) -> String? {
         if word.count == 1 { return stems[word] }
@@ -119,8 +134,9 @@ public final class Lexicon: @unchecked Sendable {
             }
         }
         if let shortRoot {
-            if candidates.isEmpty { candidates.append(Candidate(code)) }
-            candidates.insert(Candidate(shortRoot), at: 1)
+            if candidates.isEmpty && Self.protectedShortcutCount(for: code) == 2 { candidates.append(Candidate(code)) }
+            let position = Self.protectedShortcutCount(for: code) - 1
+            candidates.insert(Candidate(shortRoot), at: position)
         }
         return candidates
     }
@@ -150,6 +166,11 @@ public final class Lexicon: @unchecked Sendable {
         return results
     }
 
+    public static func protectedShortcutCount(for code: String) -> Int {
+        guard code.count == 1, let key = code.first, roots[key] != nil else { return 0 }
+        return coincidentShortcuts.contains(code) ? 1 : 2
+    }
+
     public func isFixedWord(_ word: String) -> Bool { fixedWords.contains(word) }
 
     public func ranked(_ candidates: [Candidate], code: String, scores: [String: Int],
@@ -158,7 +179,7 @@ public final class Lexicon: @unchecked Sendable {
         let positions = candidates.indices.filter { index in
             let word = candidates[index].word
             guard edits[word]?.pinned != true else { return false }
-            return includesFixed || (!isFixedWord(word) && (code.count != 1 || index > 1))
+            return includesFixed || (!isFixedWord(word) && index >= Self.protectedShortcutCount(for: code))
         }
         let sorted = positions.sorted {
             let prior = scores[candidates[$0].word, default: 0]

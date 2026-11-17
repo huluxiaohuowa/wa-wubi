@@ -31,6 +31,7 @@ final class LibraryStore: ObservableObject {
     private var pinyinLoading = false
     private var pinyinCallbacks: [() -> Void] = []
     private var extras: [String: [Entry]] = [:]
+    private(set) var preferredImportCodes: [String: String] = [:]
     private var edits: [String: [String: WordEdit]] = [:]
     private let device: String
     private let local = applicationSupport.appendingPathComponent("state.json")
@@ -116,7 +117,7 @@ final class LibraryStore: ObservableObject {
         var changed = false
         for selection in selections where Entry.validCode(selection.code) {
             let isProtected = lexicon.isFixedWord(selection.word) || (selection.code.count == 1 &&
-                candidates(.wubi, selection.code).prefix(2).contains { $0.word == selection.word })
+                candidates(.wubi, selection.code).prefix(Lexicon.protectedShortcutCount(for: selection.code)).contains { $0.word == selection.word })
             if isProtected && preferences.rankingRange == .ordinary { continue }
             let amount = ranking[selection.code]?[selection.word] ?? 0
             guard amount < 1_000_000, amount > 0 || ranking[selection.code, default: [:]].count < 128 else { continue }
@@ -257,7 +258,31 @@ final class LibraryStore: ObservableObject {
             if $0.id == "personal" || $1.id == "personal" { return $0.id == "personal" }
             return $0.id < $1.id
         }
-        extras = Dictionary(grouping: groups.flatMap(\.entries), by: \.code).mapValues { entries in
+        let olderPackages = nextGroups.filter { $0.id != "personal" }.sorted {
+            let first = snapshot.values["group/" + $0.id]?.revision
+            let second = snapshot.values["group/" + $1.id]?.revision
+            if let first, let second, first != second { return first < second }
+            return $0.id < $1.id
+        }
+        var known: [String: String] = [:]
+        for group in olderPackages {
+            for entry in group.entries where known[entry.word] == nil { known[entry.word] = entry.code }
+        }
+        let manualByDate = personal.sorted { lhs, rhs in
+            let first = snapshot.values["personal/\(lhs.code)/\(lhs.word)"]
+            let second = snapshot.values["personal/\(rhs.code)/\(rhs.word)"]
+            let firstTime = first?.modifiedAt ?? .distantPast
+            let secondTime = second?.modifiedAt ?? .distantPast
+            if firstTime != secondTime { return firstTime < secondTime }
+            if let first, let second, first.revision != second.revision { return first.revision < second.revision }
+            return lhs.code < rhs.code
+        }
+        for entry in manualByDate { known[entry.word] = entry.code }
+        preferredImportCodes = known
+        let canonical = personal + olderPackages.flatMap { group in
+            group.entries.map { entry in Entry(entry.word, known[entry.word] ?? entry.code, weight: entry.weight) }
+        }
+        extras = Dictionary(grouping: canonical, by: \.code).mapValues { entries in
             entries.enumerated().sorted { lhs, rhs in
                 lhs.element.weight == rhs.element.weight ? lhs.offset < rhs.offset : lhs.element.weight > rhs.element.weight
             }.map(\.element)
