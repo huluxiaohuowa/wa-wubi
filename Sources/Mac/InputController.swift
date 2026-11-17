@@ -1,0 +1,325 @@
+import AppKit
+import InputMethodKit
+import WubiCore
+
+@objc(WAWubiInputController)
+final class InputController: IMKInputController {
+    private static weak var activeController: InputController?
+    private static var english = false
+    private let store = LibraryStore.shared
+    private let speech = SpeechCapture()
+    private var state = Composition()
+    private var shiftPressed = false
+    private var speaking = false
+    private var statusText: String?
+    private var statusClear: DispatchWorkItem?
+    private var observation: NSObjectProtocol?
+    private let replacement = NSRange(location: NSNotFound, length: NSNotFound)
+    private var lookup: (Composition.Mode, String) -> [Candidate] { store.candidates }
+
+    override func recognizedEvents(_ sender: Any!) -> Int {
+        Int((NSEvent.EventTypeMask.keyDown.union(.flagsChanged)).rawValue)
+    }
+
+    override func activateServer(_ sender: Any!) {
+        Self.activeController = self
+        if state.english != Self.english { _ = state.toggleEnglish() }
+        shiftPressed = false
+        super.activateServer(sender)
+        if observation == nil {
+            observation = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.stopSpeech() }
+        }
+    }
+
+    override func deactivateServer(_ sender: Any!) {
+        stopSpeech()
+        shiftPressed = false
+        if let target = sender as? IMKTextInput, state.active { apply(state.accept(index: state.selected), to: target) }
+        state.reset()
+        CandidatePanel.shared.hide(for: self)
+        if Self.activeController === self { Self.activeController = nil }
+        if let observation { NSWorkspace.shared.notificationCenter.removeObserver(observation) }
+        observation = nil
+        super.deactivateServer(sender)
+    }
+
+    override func commitComposition(_ sender: Any!) {
+        guard let target = sender as? IMKTextInput, state.active else { return }
+        apply(state.accept(index: state.selected), to: target)
+        CandidatePanel.shared.hide(for: self)
+    }
+
+    override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
+        guard let event, let target = sender as? IMKTextInput else { return false }
+        if let active = Self.activeController, active !== self { return false }
+        if Self.activeController == nil { Self.activeController = self }
+        let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
+        if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
+        guard event.type == .keyDown else { return false }
+        shiftPressed = false
+        if speaking || statusText != nil { stopSpeech() }
+        if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
+        if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
+        if event.keyCode == 50, !state.active, !state.english {
+            store.preparePinyin { [weak self] in
+                guard let self, Self.activeController === self, self.state.mode == .pinyin,
+                      let target = self.client() else { return }
+                self.state.refresh(self.lookup)
+                self.draw(target)
+            }
+        }
+        guard let key = key(for: event) else {
+            if state.active { apply(state.accept(index: state.selected), to: target); draw(target) }
+            return false
+        }
+        if store.loading && !state.english { return false }
+        if state.code == "z", key == .space, !state.last.isEmpty {
+            let word = state.last
+            state.reset()
+            apply(.init(true, word), to: target)
+            draw(target)
+            return true
+        }
+        let wasActive = state.active
+        let result = state.handle(key, preferences: store.preferences, lookup: lookup)
+        apply(result, to: target)
+        if wasActive && !state.active && result.text.isEmpty && result.handled {
+            target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
+        }
+        draw(target)
+        return result.handled
+    }
+
+    private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
+        let isShift = event.keyCode == 56 || event.keyCode == 60
+        let isControl = event.keyCode == 59 || event.keyCode == 62
+        if (isShift || isControl), flags == [.control, .shift], store.speech.enabled {
+            shiftPressed = false
+            if !speaking { startSpeech(target) }
+            return false
+        }
+        if speaking && !flags.contains([.control, .shift]) {
+            speaking = false
+            speech.release()
+            if statusText == nil { CandidatePanel.shared.hide(for: self) }
+            return false
+        }
+        guard isShift, store.preferences.shiftToggle else { shiftPressed = false; return false }
+        if flags == [.shift] { shiftPressed = true; return false }
+        defer { shiftPressed = false }
+        if flags.isEmpty && shiftPressed {
+            apply(state.toggleEnglish(), to: target)
+            Self.english = state.english
+            notify(state.english ? "A · 英文" : "五 · 中文", at: target)
+        }
+        return false
+    }
+
+    private func startSpeech(_ target: IMKTextInput) {
+        if state.active { apply(state.accept(index: state.selected), to: target) }
+        speaking = true
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let origin = caret(target)
+        let selection = target.selectedRange()
+        speech.begin(store.speech) { [weak self] text in
+            guard let self, Self.activeController === self else { return }
+            self.statusText = text
+            self.draw(target)
+        } completed: { [weak self] result in
+            guard let self, Self.activeController === self,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  target.selectedRange() == selection, self.caret(target) == origin else {
+                self?.stopSpeech()
+                return
+            }
+            self.speaking = false
+            self.statusText = nil
+            switch result {
+            case .success(let text):
+                self.apply(.init(true, text), to: target)
+                self.draw(target)
+            case .failure(let error): self.notify(error.localizedDescription, at: target)
+            }
+        }
+    }
+
+    private func stopSpeech() {
+        speech.cancel()
+        speaking = false
+        statusClear?.cancel()
+        statusText = nil
+        CandidatePanel.shared.hide(for: self)
+    }
+
+    private func notify(_ message: String, at target: IMKTextInput) {
+        statusClear?.cancel()
+        statusText = message
+        draw(target)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.statusText = nil
+            self.draw(target)
+        }
+        statusClear = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.7, execute: item)
+    }
+
+    private func key(for event: NSEvent) -> Composition.Key? {
+        if event.modifierFlags.contains(.shift), let value = event.characters?.first, value.isASCII,
+           value.isPunctuation || value.isSymbol { return .punctuation(value) }
+        switch event.keyCode {
+        case 36, 76: return .returnKey
+        case 49: return .space
+        case 51: return .backspace
+        case 53: return .escape
+        case 123, 126: return .backward
+        case 124, 125: return .forward
+        case 116: return .previous
+        case 121: return .next
+        default: break
+        }
+        if !state.candidates.isEmpty {
+            if [27, 33].contains(event.keyCode) { return .previous }
+            if [24, 30].contains(event.keyCode) { return .next }
+        }
+        if state.mode == .english, let value = event.characters?.first, !value.isNewline {
+            return .punctuation(value)
+        }
+        if let value = event.characters?.first, value.isASCII {
+            if value.isLetter { return .letter(value) }
+            if let number = value.wholeNumberValue { return .number(number) }
+            switch value {
+            case ";": return .semicolon
+            case "'": return .apostrophe
+            case "`": return .backtick
+            default: return .punctuation(value)
+            }
+        }
+        return nil
+    }
+
+    private func shortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
+        if flags == [.control, .option, .command], event.keyCode == 30 {
+            SettingsWindow.shared.open(.lexicon)
+            return true
+        }
+        if flags == [.control, .option], event.keyCode == 17 {
+            store.update { $0.traditional.toggle() }
+            notify(store.preferences.traditional ? "繁 · 輸簡出繁" : "简 · 简体", at: target)
+            return true
+        }
+        if flags == [.control], event.keyCode == 24 || event.keyCode == 27 {
+            let range = target.selectedRange()
+            let selected = range.location != NSNotFound && range.length > 0 && range.length < 128 ?
+                target.attributedSubstring(from: range)?.string : nil
+            SettingsWindow.shared.open(.lexicon, word: selected ?? state.last, delete: event.keyCode == 27)
+            return true
+        }
+        let digitKeys = [18, 19, 20, 21, 23]
+        guard state.mode == .wubi, flags == [.control] || flags == [.control, .shift],
+              let index = digitKeys.firstIndex(of: Int(event.keyCode)), state.visible.indices.contains(index) else { return false }
+        edit(index, target: target, hide: flags.contains(.shift))
+        return true
+    }
+
+    private func edit(_ index: Int, target: IMKTextInput, hide: Bool) {
+        guard state.mode == .wubi, state.visible.indices.contains(index) else { return }
+        store.edit(state.code, state.visible[index].word, pinned: !hide, hidden: hide)
+        state.refresh(lookup)
+        draw(target)
+    }
+
+    private func apply(_ result: Composition.Result, to target: IMKTextInput) {
+        guard !result.text.isEmpty else { return }
+        let value = store.preferences.traditional ?
+            result.text.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? result.text : result.text
+        target.insertText(value, replacementRange: replacement)
+    }
+
+    private func caret(_ target: IMKTextInput) -> CGRect {
+        var rect = CGRect.zero
+        _ = target.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+        if rect.isEmpty {
+            var range = NSRange(location: NSNotFound, length: 0)
+            rect = target.firstRect(forCharacterRange: target.selectedRange(), actualRange: &range)
+        }
+        guard rect.minX.isFinite, rect.minY.isFinite else { return .zero }
+        return rect
+    }
+
+    private func draw(_ target: IMKTextInput) {
+        guard Self.activeController === self else { return }
+        let label: String
+        let candidates: [Candidate]
+        if let statusText {
+            label = statusText
+            candidates = []
+        } else if state.active {
+            switch state.mode {
+            case .wubi: label = state.code
+            case .english: label = "A · " + state.code
+            case .pinyin: label = "拼 · " + state.code
+            }
+            candidates = state.visible.map { candidate in
+                guard store.preferences.traditional else { return candidate }
+                return Candidate(candidate.word.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? candidate.word,
+                                 hint: candidate.hint)
+            }
+            let preedit = state.code
+            if !preedit.isEmpty {
+                target.setMarkedText(preedit, selectionRange: NSRange(location: preedit.utf16.count, length: 0), replacementRange: replacement)
+            } else {
+                target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
+            }
+        } else {
+            CandidatePanel.shared.hide(for: self)
+            return
+        }
+        let view = CandidateStrip(code: label, candidates: candidates, current: state.selected,
+                                  page: state.page, pages: state.pageCount, preferences: store.preferences,
+                                  choose: { [weak self] index in
+            guard let self, Self.activeController === self else { return }
+            self.apply(self.state.accept(index: index, fallback: false), to: target)
+            self.draw(target)
+        }, pin: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: false) } : nil,
+           hide: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: true) } : nil,
+           changePage: { [weak self] delta in
+            guard let self, Self.activeController === self else { return }
+            _ = self.state.handle(delta > 0 ? .next : .previous, preferences: self.store.preferences, lookup: self.lookup)
+            self.draw(target)
+        })
+        CandidatePanel.shared.render(view, at: caret(target), for: self)
+    }
+
+    override func menu() -> NSMenu! {
+        let menu = NSMenu()
+        let items: [(String, Selector)] = [
+            ("WA 五笔设置…", #selector(openSettings(_:))),
+            ("词库管理…", #selector(openLexicon(_:))),
+            (Self.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:))),
+            ("使用指南", #selector(openGuide(_:))),
+        ]
+        for (name, action) in items {
+            let item = NSMenuItem(title: name, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func openSettings(_ sender: Any?) { SettingsWindow.shared.open() }
+    @objc private func openLexicon(_ sender: Any?) { SettingsWindow.shared.open(.lexicon) }
+    @objc private func openGuide(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://wa-wubi.fuluwa.top/")!)
+    }
+    @objc private func toggleLanguage(_ sender: Any?) {
+        let result = state.toggleEnglish()
+        Self.english = state.english
+        if let target = client() {
+            apply(result, to: target)
+            notify(state.english ? "A · 英文" : "五 · 中文", at: target)
+        }
+    }
+}

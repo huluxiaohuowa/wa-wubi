@@ -1,0 +1,141 @@
+import AppKit
+import SwiftUI
+import WubiCore
+
+struct CandidateStrip: View {
+    let code: String
+    let candidates: [Candidate]
+    let current: Int
+    let page: Int
+    let pages: Int
+    let preferences: Preferences
+    var choose: ((Int) -> Void)?
+    var pin: ((Int) -> Void)?
+    var hide: ((Int) -> Void)?
+    var changePage: ((Int) -> Void)?
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var light: Bool {
+        preferences.theme == .paper || (preferences.theme == .system && colorScheme == .light)
+    }
+
+    private var background: Color {
+        if light { return Color(red: 0.965, green: 0.982, blue: 0.96) }
+        if preferences.theme == .indigo { return Color(red: 0.12, green: 0.15, blue: 0.29) }
+        return Color(red: 0.085, green: 0.16, blue: 0.145)
+    }
+
+    private var ink: Color { light ? Color(red: 0.07, green: 0.17, blue: 0.13) : .white }
+    private var highlight: Color {
+        if preferences.theme == .indigo { return Color(red: 0.79, green: 0.82, blue: 1) }
+        return Color(red: 0.72, green: 0.91, blue: 0.80)
+    }
+
+    private var caption: Color { light ? Color(red: 0.13, green: 0.36, blue: 0.25) : highlight }
+
+    var body: some View {
+        let layout = preferences.vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) :
+            AnyLayout(HStackLayout(alignment: .center, spacing: 3))
+        layout {
+            Text(code)
+                .font(.system(size: max(12, preferences.fontSize - 5), weight: .semibold, design: .monospaced))
+                .foregroundStyle(caption)
+                .padding(.horizontal, 7)
+                .lineLimit(1)
+            if candidates.isEmpty {
+                if !code.contains(" ") && !code.contains("·") && !code.contains("…") {
+                    Text("无候选").font(.system(size: 12)).foregroundStyle(ink.opacity(0.68))
+                }
+            } else {
+                ForEach(candidates.indices, id: \.self) { index in
+                    Button { choose?(index) } label: {
+                        HStack(spacing: 5) {
+                            Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
+                            Text(candidates[index].word).font(.system(size: preferences.fontSize, weight: .medium))
+                                .lineLimit(1).truncationMode(.tail)
+                                .frame(maxWidth: preferences.vertical ? 220 : 137)
+                            if !candidates[index].hint.isEmpty {
+                                Text(candidates[index].hint).font(.system(size: 10, design: .monospaced))
+                            }
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .foregroundStyle(index == current ? Color.black.opacity(0.86) : ink)
+                        .background(index == current ? highlight : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(index + 1) \(candidates[index].word)")
+                    .contextMenu {
+                        if let pin { Button("移到首位") { pin(index) } }
+                        if let hide { Button("隐藏候选") { hide(index) } }
+                    }
+                }
+                if pages > 1 {
+                    HStack(spacing: 4) {
+                        Button { changePage?(-1) } label: { Image(systemName: "chevron.left") }
+                            .disabled(page == 0).accessibilityLabel("上一页")
+                        Text("\(page + 1)/\(pages)").monospacedDigit()
+                        Button { changePage?(1) } label: { Image(systemName: "chevron.right") }
+                            .disabled(page + 1 == pages).accessibilityLabel("下一页")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(caption)
+                    .padding(.horizontal, 5)
+                }
+            }
+        }
+        .lineLimit(1)
+        .padding(6)
+        .fixedSize()
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(background.opacity(preferences.opacity))
+                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(ink.opacity(0.18)) }
+        }
+    }
+}
+
+final class CandidatePanel: NSPanel {
+    static let shared = CandidatePanel()
+    weak var owner: InputController?
+
+    private init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .popUpMenu
+        hidesOnDeactivate = false
+        animationBehavior = .none
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    func render(_ view: CandidateStrip, at caret: CGRect, for owner: InputController) {
+        self.owner = owner
+        let host = NSHostingView(rootView: view)
+        if #available(macOS 13, *) { host.sizingOptions = [.intrinsicContentSize] }
+        contentView = host
+        let size = host.fittingSize
+        let mouse = NSEvent.mouseLocation
+        let anchor = caret.isEmpty ? CGRect(x: mouse.x, y: mouse.y, width: 1, height: 1) : caret
+        guard let screen = NSScreen.screens.first(where: {
+            $0.frame.contains(CGPoint(x: anchor.midX, y: anchor.midY))
+        }) ?? NSScreen.main else { return }
+        let bounds = screen.visibleFrame.insetBy(dx: 7, dy: 7)
+        let below = anchor.minY - size.height - 5
+        let y = below < bounds.minY ? min(bounds.maxY - size.height, anchor.maxY + 5) : below
+        let x = max(bounds.minX, min(anchor.minX, bounds.maxX - size.width))
+        setFrame(NSRect(origin: NSPoint(x: x, y: y), size: size), display: true)
+        orderFrontRegardless()
+    }
+
+    func hide(for controller: InputController) {
+        guard owner === controller else { return }
+        orderOut(nil)
+        owner = nil
+    }
+}

@@ -1,0 +1,22 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test native engine and build input method
+        run: |
+          build="$HOME/dev/build/wa-wubi"
+          mkdir -p "$build/tmp"
+          export TMPDIR="$build/tmp"
+          swift test --scratch-path "$build/swift"
+          ./script/build_app.sh

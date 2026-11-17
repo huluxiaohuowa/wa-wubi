@@ -1,0 +1,55 @@
+name: Sign and notarize
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    environment: apple-release
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build signed and notarized DMG
+        id: package
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          WAWUBI_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          WAWUBI_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          release="$HOME/dev/build/wa-wubi/release"
+          mkdir -p "$release/tmp"
+          scratch="$(mktemp -d "$release/tmp/signing.XXXXXX")"
+          keychain="$scratch/signing.keychain-db"
+          trap 'security delete-keychain "$keychain" >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
+          keychain_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$keychain_password"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 -D > "$scratch/cert.p12"
+          printf '%s' "$NOTARY_KEY" | base64 -D > "$scratch/AuthKey.p8"
+          security import "$scratch/cert.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ && !found {print $2; found=1}')"
+          test -n "$identity"
+          export WAWUBI_BUILD_DIR="$release"
+          export WAWUBI_SIGN_IDENTITY="$identity"
+          export WAWUBI_NOTARY_KEY_FILE="$scratch/AuthKey.p8"
+          export WAWUBI_VERSION="${GITHUB_REF_NAME#v}"
+          dmg="$(./script/package_release.sh)"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: WA-Wubi-${{ github.ref_name }}
+          path: ${{ steps.package.outputs.dmg }}
+          if-no-files-found: error

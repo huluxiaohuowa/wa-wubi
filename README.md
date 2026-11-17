@@ -1,0 +1,55 @@
+# WA 五笔
+
+WA 五笔是使用 Swift、InputMethodKit、AppKit 和 SwiftUI 开发的原生 macOS 86 五笔输入法。支持 macOS 13 及以上版本。官网和四键字练习在 [wa-wubi.fuluwa.top](https://wa-wubi.fuluwa.top/)。
+
+## 安装
+
+在 [GitHub Releases](https://github.com/huluxiaohuowa/wa-wubi/releases) 下载 DMG，把 app 拖到镜像内的安装目录。然后在「系统设置 → 键盘 → 文本输入 → 编辑」的简体中文类别添加 WA 五笔。首次安装后若列表还未刷新，注销再登录。
+
+## 使用
+
+| 按键 | 行为 |
+| --- | --- |
+| `iiii;` / `oooo;` | 水 / 火。25 个同键四连键名字固定在第二位 |
+| 空格、数字 1–5、分号、单引号 | 上屏当前候选、指定候选、第二项、第三项 |
+| `-` / `=`、`[` / `]` | 候选翻页 |
+| Shift | 轻按切换中英，组合键照常使用 |
+| 空闲时按分号、输入大写字母 | 临时英文。分号模式也可输入 `2026-11-17` 或 `123.45` 后确认，得到中文日期或大写金额 |
+| 反引号 | 临时拼音及五笔反查 |
+| `z` + 空格 / `zz` | 重复上次输入 / 符号 |
+| Control + 数字 / Control + Shift + 数字 | 候选置顶 / 隐藏 |
+| Control + `=` / Control + `-` | 快捷加词 / 隐藏最近输入的候选，亦可使用选中文本 |
+| Control + Option + Command + `]` | 词库管理 |
+| Control + Option + T | 切换简体和繁体输出 |
+| 按住 Control + Shift，松手 | 启用语音后，按住录音，松手转写到当前输入会话 |
+
+从输入法菜单打开设置，可调整主题、透明度、字号、横竖布局和标点。
+
+### 词库与同步
+
+- 本地可导入 `.scel`、Rime `.dict.yaml`、TXT、TSV 和 CSV。文本支持「词语 编码」或「编码 词语」，可带权重。只有词语时按 86 规则生成编码，生僻字缺码的词会计入跳过数。
+- 搜狗拼音 SCEL 的词语通过单字全码重新计算为五笔，拼音索引不会成为五笔编码。
+- 「词库 → 在线词库」可安装或更新计算机、医学和行政区划包。下载端核对目录中的 SHA-256。
+- 「同步」通过用户选择的 iCloud Drive 文件夹传输词库和输入偏好。两台 Mac 选同一位置。不同项目的离线修改合并，同一项目并发修改使用版本序号和设备标识决定最终值。同步开关、文件夹选择和语音配置保存在本机。
+
+### 语音
+
+语音默认关闭。开启后可选择 Apple Speech、OpenAI、Groq、硅基流动或自定义 HTTPS 转写地址。自定义服务接收兼容 OpenAI 的 multipart `file`、`model`、`response_format`，返回 JSON `text`。
+
+Apple Speech 在系统支持时优先设备端识别，也可强制仅设备端。主动选用云服务时，松手后音频发往选中的服务。密钥保存在本机钥匙串，录音文件使用后移除。
+
+## 开发
+
+```bash
+swift test --scratch-path "$HOME/dev/build/wa-wubi/swift"
+./script/build_and_run.sh --verify
+./script/install_local.sh
+```
+
+macOS 26 或更新版本可能要求已公证的输入法参与系统注册。可以用 `WAWUBI_APP_PATH` 指向已签名并公证的 app，或从最终 DMG 安装。
+
+本地发布由 `python3 script/release_local.py` 从已有 Apple 发布配置读取签名和公证参数。GitHub 的 **Sign and notarize** 可在 `v*` 标签上手动运行，安装包保存在 Actions 构建产物中。所需发布 Secrets 在 `apple-release` 环境中。
+
+## 码表许可
+
+[内置 86 五笔码表](https://github.com/rime/rime-wubi/tree/152a0d3f3efe40cae216d1e3b338242446848d07) 原样收录，保留作者署名和 [LGPL-3.0](Resources/LGPL-3.0.txt)、[GPL-3.0](Resources/GPL-3.0.txt) 原文。运行时由本项目 Swift 引擎加载文本码表。在线包的来源和许可见 [词库目录](https://github.com/huluxiaohuowa/wawubi-web/tree/main/dictionaries)。
