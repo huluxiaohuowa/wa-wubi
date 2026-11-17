@@ -5,7 +5,7 @@ build="${WAWUBI_BUILD_DIR:-$HOME/dev/build/wa-wubi/release}"
 export WAWUBI_BUILD_DIR="$build"
 export WAWUBI_CONFIGURATION=release
 export WAWUBI_UNIVERSAL=1
-export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.1}"
+export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.2}"
 : "${WAWUBI_SIGN_IDENTITY:?Developer ID Application signing identity required}"
 : "${WAWUBI_NOTARY_KEY_FILE:?Notary API private key file required}"
 : "${WAWUBI_NOTARY_KEY_ID:?Notary API key ID required}"
@@ -32,7 +32,15 @@ xcrun stapler validate "$app" >&2
 
 stage="$(mktemp -d "$build/tmp/disk.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-ditto "$app" "$stage/WA 五笔.app"
+payload="$build/WAWubi-payload.zip"
+ditto -c -k --keepParent "$app" "$payload"
+installer="$stage/安装 WA 五笔.app"
+"$root/script/build_installer.sh" "$payload" "$installer"
+installer_zip="$build/WAInstaller-notary.zip"
+ditto -c -k --keepParent "$installer" "$installer_zip"
+notarize "$installer_zip"
+xcrun stapler staple "$installer" >&2
+xcrun stapler validate "$installer" >&2
 cp "$root/Resources/安装说明.txt" "$stage/"
 dmg="$build/WA-Wubi-$WAWUBI_VERSION.dmg"
 hdiutil create -ov -volname "WA 五笔" -srcfolder "$stage" -format UDZO "$dmg" >&2

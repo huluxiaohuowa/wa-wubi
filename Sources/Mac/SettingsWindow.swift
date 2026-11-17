@@ -56,10 +56,10 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
-                    Text("五").font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(accent, in: RoundedRectangle(cornerRadius: 11))
+                    if let logo = NSImage(named: "BrandIcon") {
+                        Image(nsImage: logo).resizable().frame(width: 36, height: 36)
+                            .accessibilityHidden(true)
+                    }
                     Text("WA 五笔").font(.system(size: 17, weight: .bold))
                 }
                 .padding(.bottom, 18)
@@ -213,18 +213,75 @@ struct SettingsView: View {
         }
     }
 
-    private var cloud: some View {
+    private var cloud: some View { CloudSettings(store: store) }
+}
+
+private struct CloudSettings: View {
+    @ObservedObject var store: LibraryStore
+    @State private var enable = false
+    @State private var disable = false
+    @State private var resolution = CloudResolution.newest
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("iCloud Drive").font(.title3.weight(.semibold))
-            Text("在每台 Mac 上选择同一个 iCloud Drive 位置。WA 五笔会同步导入词库、手动加词、候选调整和输入偏好。")
+            Text("在每台 Mac 上选择同一个 iCloud Drive 位置，同步词库、候选调整和输入偏好。")
                 .foregroundStyle(.secondary)
-            Toggle("启用 iCloud 同步", isOn: pref(\.cloud))
+            Toggle("启用 iCloud 同步", isOn: Binding(
+                get: { store.preferences.cloud },
+                set: { value in
+                    if value {
+                        if store.cloudFolder == nil, !store.chooseCloudFolder() { return }
+                        resolution = .newest
+                        enable = true
+                    } else { disable = true }
+                }
+            ))
+            .disabled(store.syncing)
             HStack {
-                Button("选择位置…") { store.chooseCloudFolder() }
-                Button("立即同步") { store.sync() }.disabled(!store.preferences.cloud)
+                Button("选择位置…") { store.chooseCloudFolder() }.disabled(store.preferences.cloud || store.syncing)
+                Button("立即同步") { store.sync() }.disabled(!store.preferences.cloud || store.syncing)
+                if store.syncing { ProgressView().controlSize(.small) }
             }
             if !store.status.isEmpty { Text(store.status).font(.callout).foregroundStyle(.secondary) }
             Text("语音服务及其密钥在每台 Mac 上单独设置。").font(.caption).foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $enable) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("如何开始 iCloud 同步？").font(.title2.weight(.semibold))
+                Text("合并会保留两边各自新增的词库和设置。请选择如何处理改过的同一项。")
+                    .foregroundStyle(.secondary)
+                Picker("开启方式", selection: $resolution) {
+                    Text("合并 · 较新修改优先").tag(CloudResolution.newest)
+                    Text("合并 · 冲突以本机为准").tag(CloudResolution.local)
+                    Text("合并 · 冲突以 iCloud 为准").tag(CloudResolution.cloud)
+                    Text("直接切换到 iCloud").tag(CloudResolution.replaceWithCloud)
+                }
+                .pickerStyle(.radioGroup)
+                Text(resolution == .replaceWithCloud ?
+                     "用 iCloud 里的词库和设置替换本机当前内容。开启前的本机内容会保留为可恢复副本。" :
+                     "选择只影响这次合并。开启后，同一项的后续更改以较新修改为准。")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("取消") { enable = false }.keyboardShortcut(.cancelAction)
+                    Button("开启同步") {
+                        enable = false
+                        store.enableCloud(using: resolution)
+                    }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(24)
+            .frame(width: 460)
+        }
+        .alert("关闭 iCloud 同步？", isPresented: $disable) {
+            Button("保留当前结果") { store.disableCloud(restore: false) }
+            if store.canRestoreBeforeCloud {
+                Button("恢复开启前的本机副本") { store.disableCloud(restore: true) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("关闭后，本机的后续修改只保存在这台 Mac。已经同步的数据会留在 iCloud。")
         }
     }
 }

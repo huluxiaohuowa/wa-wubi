@@ -20,6 +20,8 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var groups: [WordGroup] = []
     @Published private(set) var status = ""
     @Published private(set) var loading = true
+    @Published private(set) var syncing = false
+    @Published private(set) var cloudFolder: URL?
     @Published private(set) var pinyinReady = false
     @Published var speech = SpeechConfiguration.load() {
         didSet { speech.save() }
@@ -33,11 +35,12 @@ final class LibraryStore: ObservableObject {
     private let device: String
     private let local = applicationSupport.appendingPathComponent("state.json")
     private var snapshot = Snapshot()
-    private var cloudFolder: URL?
     private var cloudIdentity: Data?
     private var timer: Timer?
-    private var syncing = false
     private var cloudDirty = true
+    private let beforeCloud = applicationSupport.appendingPathComponent("before-cloud.json")
+
+    var canRestoreBeforeCloud: Bool { FileManager.default.fileExists(atPath: beforeCloud.path) }
 
     private init() {
         let defaults = UserDefaults.standard
@@ -99,9 +102,9 @@ final class LibraryStore: ObservableObject {
         let old = preferences
         var next = old
         change(&next)
+        next.cloud = old.cloud
         guard next != old else { return }
         preferences = next
-        if old.cloud != next.cloud { UserDefaults.standard.set(next.cloud, forKey: "syncEnabled") }
         if next.mixedPinyin { preparePinyin() }
         let encoder = JSONEncoder()
         if let before = try? encoder.encode(old), let after = try? encoder.encode(next),
@@ -211,15 +214,21 @@ final class LibraryStore: ObservableObject {
 
     private func persist() {
         do {
-            try FileManager.default.createDirectory(at: Self.applicationSupport, withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshot).write(to: local, options: .atomic)
+            try save(snapshot, to: local)
             cloudDirty = true
         } catch {
             status = "无法保存本地词库和设置。"
         }
     }
 
-    func chooseCloudFolder() {
+    private func save(_ state: Snapshot, to url: URL) throws {
+        try FileManager.default.createDirectory(at: Self.applicationSupport, withIntermediateDirectories: true)
+        try JSONEncoder().encode(state).write(to: url, options: .atomic)
+    }
+
+    @discardableResult
+    func chooseCloudFolder() -> Bool {
+        guard !preferences.cloud, !syncing else { return false }
         let drive = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         let opener = NSOpenPanel()
@@ -235,17 +244,82 @@ final class LibraryStore: ObservableObject {
             guard basePath == drivePath || basePath.hasPrefix(drivePath + "/"),
                   let identity = currentCloudIdentity() else {
                 status = "请选择 iCloud Drive 内的文件夹，并确认已登录 iCloud。"
-                return
+                return false
             }
             let folder = base.appendingPathComponent(Self.syncFolder, isDirectory: true)
             cloudFolder = folder
             cloudIdentity = identity
             UserDefaults.standard.set(folder.path, forKey: "syncPath")
             UserDefaults.standard.set(identity, forKey: "syncIdentity")
-            cloudDirty = true
-            if preferences.cloud { sync() }
-            else { update { $0.cloud = true } }
+            status = "同步位置已选定。"
+            return true
         }
+        return false
+    }
+
+    func enableCloud(using resolution: CloudResolution) {
+        guard !preferences.cloud, !syncing, let folder = cloudFolder else { return }
+        guard let identity = currentCloudIdentity(), identity == cloudIdentity else {
+            status = "iCloud Drive 当前不可用，或帐户已变更。请重新选择同步位置。"
+            return
+        }
+        syncing = true
+        status = "正在读取 iCloud Drive 词库和设置…"
+        DispatchQueue.global(qos: .utility).async {
+            let result = Result { try CloudSnapshotFiles.read(from: folder) }
+            DispatchQueue.main.async {
+                self.syncing = false
+                guard identity == self.currentCloudIdentity() else {
+                    self.status = "iCloud 帐户已变更，请重新选择同步位置。"
+                    return
+                }
+                do {
+                    let remote = try result.get()
+                    if resolution == .replaceWithCloud && remote == nil {
+                        self.status = "iCloud 中还没有同步数据。本机词库和设置保持原样。"
+                        return
+                    }
+                    let settled = self.snapshot.resolved(with: remote ?? Snapshot(), using: resolution, device: self.device)
+                    try self.save(self.snapshot, to: self.beforeCloud)
+                    try self.save(settled, to: self.local)
+                    self.snapshot = settled
+                    self.setCloudEnabled(true)
+                    self.reload()
+                    self.cloudDirty = resolution != .replaceWithCloud
+                    if self.preferences.mixedPinyin { self.preparePinyin() }
+                    self.status = "已启用 iCloud 同步。"
+                    self.sync()
+                } catch {
+                    self.status = self.cloudMessage(for: error)
+                }
+            }
+        }
+    }
+
+    func disableCloud(restore: Bool) {
+        guard preferences.cloud, !syncing else { return }
+        if restore {
+            do {
+                let backup = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: beforeCloud))
+                guard backup.version == Snapshot.format else { throw CocoaError(.fileReadCorruptFile) }
+                setCloudEnabled(false)
+                try save(backup, to: local)
+                snapshot = backup
+                reload()
+                if preferences.mixedPinyin { preparePinyin() }
+                status = "同步已关闭，已恢复开启前的本机词库和设置。"
+            } catch {
+                status = "无法恢复本机副本。当前词库和设置保持原样。"
+            }
+        } else {
+            setCloudEnabled(false)
+            status = "同步已关闭，已保留当前词库和设置。"
+        }
+    }
+
+    private func setCloudEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "syncEnabled")
+        preferences.cloud = enabled
     }
 
     private func currentCloudIdentity() -> Data? {
@@ -258,67 +332,47 @@ final class LibraryStore: ObservableObject {
         guard preferences.cloud, !syncing else { return }
         guard let folder = cloudFolder else { status = "请选择 iCloud Drive 同步位置。"; return }
         guard let identity = currentCloudIdentity() else { status = "iCloud Drive 当前不可用。"; return }
-        guard identity == cloudIdentity else { status = "iCloud 帐户已变更，请重新选择同步位置。"; return }
-        let incomingSizeLimit = 128 * 1024 * 1024
+        guard identity == cloudIdentity else { status = "iCloud 帐户已变更，请关闭同步后重新选择位置。"; return }
         syncing = true
         let sent = snapshot
         let write = cloudDirty
+        let device = device
         cloudDirty = false
-        let ownFile = folder.appendingPathComponent(device + ".json")
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var received = Snapshot()
-            var message = "已读写 iCloud Drive，跨设备传输由系统完成。"
-            var failed = false
-            do {
-                let files = FileManager.default
-                try files.createDirectory(at: folder, withIntermediateDirectories: true)
-                let items = try files.contentsOfDirectory(at: folder, includingPropertiesForKeys: [
-                    .ubiquitousItemDownloadingStatusKey, .fileSizeKey
-                ], options: [])
-                for url in items where url.lastPathComponent != ownFile.lastPathComponent {
-                    let placeholder = url.pathExtension == "icloud"
-                    guard url.pathExtension == "json" || placeholder else { continue }
-                    let keys = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .fileSizeKey])
-                    if placeholder || keys.ubiquitousItemDownloadingStatus == .notDownloaded {
-                        try? files.startDownloadingUbiquitousItem(at: url)
-                        message = "正在从 iCloud Drive 下载变更。"
-                        continue
-                    }
-                    guard (keys.fileSize ?? 0) <= incomingSizeLimit else { continue }
-                    var accessError: NSError?
-                    NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &accessError) { actualURL in
-                        if let data = try? Data(contentsOf: actualURL),
-                           let remote = try? JSONDecoder().decode(Snapshot.self, from: data) {
-                            received.merge(remote)
-                        }
-                    }
-                }
-                if write || !files.fileExists(atPath: ownFile.path) {
-                    guard self?.currentCloudIdentity() == identity else { throw CocoaError(.fileWriteNoPermission) }
-                    let data = try JSONEncoder().encode(sent)
-                    var accessError: NSError?
-                    var writeError: Error?
-                    NSFileCoordinator().coordinate(writingItemAt: ownFile, options: .forReplacing, error: &accessError) { url in
-                        do { try data.write(to: url, options: .atomic) } catch { writeError = error }
-                    }
-                    if let error = accessError ?? writeError as NSError? { throw error }
-                }
-            } catch {
-                message = "无法访问 iCloud Drive 同步文件夹。"
-                failed = true
+            let result = Result {
+                let received = try CloudSnapshotFiles.read(from: folder, excluding: device)
+                guard self?.currentCloudIdentity() == identity else { throw CocoaError(.fileWriteNoPermission) }
+                if write { try CloudSnapshotFiles.write(sent, in: folder, device: device) }
+                return received
             }
-            DispatchQueue.main.async { [weak self, received, message, failed] in
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.syncing = false
-                guard self.cloudFolder == folder, self.preferences.cloud else { self.sync(); return }
-                if self.snapshot.merge(received) {
-                    self.reload()
-                    self.persist()
-                    if self.preferences.mixedPinyin { self.preparePinyin() }
+                guard self.cloudFolder == folder, self.preferences.cloud else { return }
+                switch result {
+                case .success(let received):
+                    if let received, self.snapshot.merge(received) {
+                        self.reload()
+                        self.persist()
+                        if self.preferences.mixedPinyin { self.preparePinyin() }
+                    }
+                    self.status = "已读写 iCloud Drive，跨设备传输由系统完成。"
+                case .failure(let error):
+                    self.cloudDirty = self.cloudDirty || write
+                    self.status = self.cloudMessage(for: error)
                 }
-                self.cloudDirty = self.cloudDirty || failed
-                self.status = message
             }
+        }
+    }
+
+    private func cloudMessage(for error: Error) -> String {
+        switch error {
+        case CloudSnapshotFiles.AccessError.downloading:
+            return "正在下载 iCloud 数据，稍后再试。"
+        case CloudSnapshotFiles.AccessError.invalidSnapshot:
+            return "iCloud 同步数据无法读取。现有词库和设置保持原样。"
+        default:
+            return "无法访问同步位置或保存本机数据。请检查 iCloud Drive 后再试。"
         }
     }
 }

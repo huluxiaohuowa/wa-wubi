@@ -75,6 +75,56 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(imported.entries.allSatisfy { Entry.validCode($0.code) })
     }
 
+    func testCloudResolutionUsesSelectedSideForConflicts() {
+        let old = Date(timeIntervalSince1970: 10)
+        let new = Date(timeIntervalSince1970: 20)
+        var local = Snapshot()
+        var cloud = Snapshot()
+        let common = "pref/opacity"
+        let localOnly = "personal/a/甲"
+        let cloudOnly = "personal/b/乙"
+        let deleted = "personal/c/丙"
+        let a = Data("a".utf8)
+        let b = Data("b".utf8)
+        local.set(common, to: a, device: "Mac", at: old)
+        local.set(localOnly, to: a, device: "Mac", at: old)
+        local.set(deleted, to: nil, device: "Mac", at: old)
+        cloud.set(common, to: b, device: "iCloud", at: new)
+        cloud.set(cloudOnly, to: b, device: "iCloud", at: new)
+        cloud.set(deleted, to: b, device: "iCloud", at: new)
+
+        let recent = local.resolved(with: cloud, using: .newest, device: "Mac")
+        XCTAssertEqual(recent.values[common]?.value, b)
+        let preferLocal = local.resolved(with: cloud, using: .local, device: "Mac")
+        XCTAssertEqual(preferLocal.values[common]?.value, a)
+        XCTAssertEqual(preferLocal.values[cloudOnly]?.value, b)
+        XCTAssertNotNil(preferLocal.values[deleted])
+        XCTAssertNil(preferLocal.values[deleted]?.value)
+        let preferCloud = local.resolved(with: cloud, using: .cloud, device: "Mac")
+        XCTAssertEqual(preferCloud.values[common]?.value, b)
+        XCTAssertEqual(preferCloud.values[localOnly]?.value, a)
+        let switched = local.resolved(with: cloud, using: .replaceWithCloud, device: "Mac")
+        XCTAssertNil(switched.values[localOnly])
+
+        XCTAssertTrue(cloud.merge(preferLocal))
+        XCTAssertEqual(cloud.values[common]?.value, a)
+        XCTAssertNil(cloud.values[deleted]?.value)
+    }
+
+    func testCloudPriorityCanOverrideNewerLocalValue() {
+        let old = Date(timeIntervalSince1970: 10)
+        let new = Date(timeIntervalSince1970: 20)
+        let key = "pref/vertical"
+        let first = Data("true".utf8)
+        let second = Data("false".utf8)
+        var local = Snapshot()
+        var cloud = Snapshot()
+        local.set(key, to: first, device: "Mac", at: new)
+        cloud.set(key, to: second, device: "iCloud", at: old)
+        XCTAssertEqual(local.resolved(with: cloud, using: .newest, device: "Mac").values[key]?.value, first)
+        XCTAssertEqual(local.resolved(with: cloud, using: .cloud, device: "Mac").values[key]?.value, second)
+    }
+
     func testIndependentOfflineChangesMergeAndRemovalPersists() {
         var first = Snapshot()
         var second = Snapshot()
