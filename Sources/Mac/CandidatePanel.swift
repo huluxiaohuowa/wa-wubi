@@ -52,7 +52,7 @@ struct CandidateStrip: View {
                     Button { choose?(index) } label: {
                         HStack(spacing: 5) {
                             Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
-                            Text(candidates[index].word).font(.system(size: preferences.fontSize, weight: .medium))
+                            Text(CandidateFont.label(candidates[index].word, size: preferences.fontSize))
                                 .lineLimit(1).truncationMode(.tail)
                                 .frame(maxWidth: preferences.vertical ? 220 : (preferences.candidateCount > 6 ? 78 : 137))
                             if !candidates[index].hint.isEmpty {

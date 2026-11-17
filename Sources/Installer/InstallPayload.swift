@@ -102,6 +102,9 @@ enum InstallPayload {
             [[ "$bundle" == top.fuluwa.inputmethod.Wubi86 ]] || exit 1
             /bin/mv "$target" "$backup"
         fi
-        /bin/mv "$payload" "$target"
+        /bin/mv "$payload" "$target" || exit 1
+
+        # Register the installed, verified bundle through the privileged install context.
+        "$target/Contents/MacOS/WAWubi" --register-input-source || true
         """#
 }

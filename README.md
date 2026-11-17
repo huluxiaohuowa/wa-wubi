@@ -41,7 +41,7 @@ Apple Speech 在系统支持时优先设备端识别，也可强制仅设备端�
 
 ## 更新
 
-可从输入法菜单手动检查，也可在设置中开启自动检查。更新优先通过 GitHub 获取，失败后轮试加速源。校验下载和签名后打开新版安装器。
+可从输入法菜单手动检查，或在设置中开启自动下载并安装。更新优先通过 GitHub 获取，失败后轮试加速源。下载校验通过后直接安装，macOS 可能请求管理员授权。
 
 ## 开发
 
@@ -58,3 +58,5 @@ macOS 26 或更新版本可能要求已公证的输入法参与系统注册。�
 ## 码表许可
 
 [内置 86 五笔码表](https://github.com/rime/rime-wubi/tree/152a0d3f3efe40cae216d1e3b338242446848d07) 原样收录，保留作者署名和 [LGPL-3.0](Resources/LGPL-3.0.txt)、[GPL-3.0](Resources/GPL-3.0.txt) 原文。运行时由本项目 Swift 引擎加载文本码表。在线包的来源和许可见 [词库目录](https://github.com/huluxiaohuowa/wawubi-web/tree/main/dictionaries)。
+
+候选窗使用随包分发的 WA Wubi Han 字体集合。汉字字形来自 [Jigmo](https://kamichikoichi.github.io/jigmo/)，补充符号来自 [Noto Sans SC](https://github.com/google/fonts/tree/7af0d90b4d532ffa4b041937b560c6df4e7b1e95/ofl/notosanssc) 和 [Noto Sans Math](https://github.com/google/fonts/tree/7af0d90b4d532ffa4b041937b560c6df4e7b1e95/ofl/notosansmath)，许可随字体分发。

@@ -11,6 +11,9 @@ final class InstallWindow: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var sourceEnabled = false
     @Published private(set) var registrationMessage: String?
+    private var restoreSource: TISInputSource?
+    private var temporarySourceID: String?
+    private var firstInstallSourceID: String?
 
     func open() {
         let window = NSWindow(contentViewController: NSHostingController(rootView: InstallerView(model: self)))
@@ -30,11 +33,24 @@ final class InstallWindow: ObservableObject {
             error = "安装器缺少输入法文件，请重新下载安装镜像。"
             return
         }
-        if let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-           let pointer = TISGetInputSourceProperty(current, kTISPropertyBundleID),
-           Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String == InstallPayload.identifier {
-            error = "请先切换到其他输入法，再安装或升级 WA 五笔。"
-            return
+        let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+        let destination = InstallPayload.folder.appendingPathComponent(InstallPayload.name)
+        let legacy = InstallPayload.legacyFolder.appendingPathComponent(InstallPayload.name)
+        if !FileManager.default.fileExists(atPath: destination.path),
+           !FileManager.default.fileExists(atPath: legacy.path) {
+            firstInstallSourceID = current.flatMap { Self.property(kTISPropertyInputSourceID, on: $0) }
+        }
+        if let current, Self.property(kTISPropertyBundleID, on: current) == InstallPayload.identifier {
+            guard let layout = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+                  let layoutID = Self.property(kTISPropertyInputSourceID, on: layout),
+                  TISSelectInputSource(layout) == noErr,
+                  let temporary = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                  Self.property(kTISPropertyInputSourceID, on: temporary) == layoutID else {
+                error = "macOS 暂时无法切换输入源，请稍后再试。"
+                return
+            }
+            restoreSource = current
+            temporarySourceID = layoutID
         }
         installing = true
         error = nil
@@ -55,6 +71,7 @@ final class InstallWindow: ObservableObject {
                         self.registrationMessage = "系统版本已安装。请先移走个人输入法目录中残留的 WA 五笔旧版，再启用输入源。"
                     }
                 case .failure:
+                    self.restoreInputSource()
                     self.error = "未完成系统安装。请确认已批准管理员授权，或重新下载安装镜像。"
                 }
             }
@@ -63,7 +80,7 @@ final class InstallWindow: ObservableObject {
 
     func enableSource(at destination: URL = InstallPayload.folder.appendingPathComponent(InstallPayload.name)) {
         _ = LSRegisterURL(destination as CFURL, true)
-        guard TISRegisterInputSource(destination as CFURL) == noErr else {
+        if Self.enabledModes().isEmpty, TISRegisterInputSource(destination as CFURL) != noErr {
             registrationMessage = "安装文件已就位，但 macOS 尚未注册输入源。首次安装时，可保存工作后重新登录再添加。"
             return
         }
@@ -75,13 +92,20 @@ final class InstallWindow: ObservableObject {
         if let mode = (TISCreateInputSourceList(query, true)?.takeRetainedValue() as? [TISInputSource])?.first {
             _ = TISEnableInputSource(mode)
         }
-        let enabled = TISCreateInputSourceList(query, false)?.takeRetainedValue() as? [TISInputSource] ?? []
+        let enabled = Self.enabledModes()
         sourceEnabled = enabled.contains { source in
             guard let value = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable) else { return false }
             return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
         }
         if sourceEnabled {
-            registrationMessage = "macOS 已将 WA 五笔列为可选输入源。请在菜单栏尝试切换。"
+            restoreInputSource(to: enabled.first)
+            if let sourceID = firstInstallSourceID, let mode = enabled.first,
+               let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+               Self.property(kTISPropertyInputSourceID, on: current) == sourceID {
+                _ = TISSelectInputSource(mode)
+            }
+            firstInstallSourceID = nil
+            registrationMessage = "WA 五笔已可在菜单栏选择。"
         } else if remainingAttempts > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 self?.findAndEnable(remainingAttempts: remainingAttempts - 1)
@@ -90,6 +114,25 @@ final class InstallWindow: ObservableObject {
             registrationMessage = "已安装，但当前会话未能启用。首次安装时，可保存工作后重新登录，再在「简体中文」下添加 WA 五笔。"
         }
     }
+
+    private func restoreInputSource(to updatedSource: TISInputSource? = nil) {
+        defer { restoreSource = nil; temporarySourceID = nil }
+        guard let original = restoreSource,
+              let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              Self.property(kTISPropertyInputSourceID, on: current) == temporarySourceID else { return }
+        _ = TISSelectInputSource(updatedSource ?? original)
+    }
+
+    private static func enabledModes() -> [TISInputSource] {
+        let query = [kTISPropertyInputSourceID as String: InstallPayload.mode] as CFDictionary
+        return TISCreateInputSourceList(query, false)?.takeRetainedValue() as? [TISInputSource] ?? []
+    }
+
+    private static func property(_ key: CFString, on source: TISInputSource) -> String? {
+        guard let value = TISGetInputSourceProperty(source, key) else { return nil }
+        return Unmanaged<CFString>.fromOpaque(value).takeUnretainedValue() as String
+    }
+
 }
 
 private struct InstallerView: View {
@@ -125,6 +168,7 @@ private struct InstallerView: View {
             } else {
                 Text("将原生 86 五笔输入法安装到系统目录，供这台 Mac 的所有账号使用。安装需要管理员授权。")
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let error = model.error { Text(error).foregroundStyle(.red) }
                 HStack {
                     Button("取消") { NSApp.terminate(nil) }.disabled(model.installing)

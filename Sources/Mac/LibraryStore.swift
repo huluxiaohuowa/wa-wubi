@@ -94,19 +94,12 @@ final class LibraryStore: ObservableObject {
     }
 
     func candidates(_ mode: Composition.Mode, _ code: String) -> [Candidate] {
-        let traditional = preferences.traditional
-        let canDisplay: (String) -> Bool = { word in
-            let displayed = traditional
-                ? word.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? word
-                : word
-            return CandidateGlyphs.canDisplay(displayed)
-        }
-        if mode == .pinyin { return pinyin[code, default: []].filter { canDisplay($0.word) } }
+        if mode == .pinyin { return pinyin[code, default: []] }
         if code == "zz", preferences.zFunction {
             return ["※", "—", "…", "·", "✓", "×", "→", "←", "↑", "↓", "★", "☆", "〇", "□", "■", "①", "②", "③"].map { Candidate($0) }
         }
         var words = lexicon.exact(code, extra: extras[code, default: []], edits: edits[code, default: [:]],
-                                  includeContinuations: preferences.showContinuations, canDisplay: canDisplay)
+                                  includeContinuations: preferences.showContinuations)
         if preferences.singleCharacters {
             words = words.filter { $0.word.count == 1 }
         }
@@ -116,7 +109,7 @@ final class LibraryStore: ObservableObject {
         }
         guard preferences.mixedPinyin else { return words }
         let known = Set(words.map(\.word))
-        return words + pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) && canDisplay($0.word) }
+        return words + pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
     }
 
     func record(_ selections: [Composition.Selection]) {

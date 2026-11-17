@@ -98,19 +98,9 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(lexicon.exact("ggt").contains { $0.word == "五笔" && $0.hint == "t" })
     }
 
-    func testUnsupportedGlyphsAreExcludedBeforeSelection() {
-        let hidden = Set(["𨝊", "𧺭", "𧻋"])
-        let candidates = lexicon.exact("fhw", canDisplay: { !hidden.contains($0) })
-        XCTAssertEqual(candidates.prefix(4).map(\.word), ["真", "䟑", "起伏", "趁"])
-        XCTAssertTrue(candidates.allSatisfy { !hidden.contains($0.word) })
-        var state = Composition()
-        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in
-            self.lexicon.exact(code, canDisplay: { !hidden.contains($0) })
-        }
-        for letter in "fhw" {
-            _ = state.handle(.letter(letter), preferences: Preferences(), lookup: lookup)
-        }
-        XCTAssertEqual(state.handle(.number(3), preferences: Preferences(), lookup: lookup).text, "起伏")
+    func testExtendedHanStaysInCandidateOrder() {
+        let words = lexicon.exact("fhw").map(\.word)
+        XCTAssertEqual(Array(words.prefix(5)), ["真", "䟑", "𨝊", "𧺭", "𧻋"])
     }
 
     func testCandidateCountAndEnterBehavior() {

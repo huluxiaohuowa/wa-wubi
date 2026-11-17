@@ -1,5 +1,13 @@
 import AppKit
+import Carbon
+import CoreServices
 import InputMethodKit
+
+if CommandLine.arguments.contains("--register-input-source") {
+    let bundle = Bundle.main.bundleURL as CFURL
+    _ = LSRegisterURL(bundle, true)
+    exit(TISRegisterInputSource(bundle) == noErr ? EXIT_SUCCESS : EXIT_FAILURE)
+}
 
 let application = NSApplication.shared
 let delegate = AppDelegate()
