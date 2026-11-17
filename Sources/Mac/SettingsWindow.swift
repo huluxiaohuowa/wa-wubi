@@ -180,7 +180,7 @@ struct SettingsView: View {
     }
 
     private var preview: some View {
-        CandidateStrip(code: "iiii", candidates: [Candidate("洋洋洒洒"), Candidate("水"), Candidate("㵘")],
+        CandidateStrip(code: "gggg", candidates: [Candidate("五一"), Candidate("王"), Candidate("琵琶")],
                        current: 1, page: 0, pages: 1, preferences: store.preferences)
     }
 
