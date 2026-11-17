@@ -1,0 +1,195 @@
+import AppKit
+import CryptoKit
+import Security
+import SwiftUI
+import WubiCore
+
+@MainActor
+final class UpdateManager: ObservableObject {
+    static let shared = UpdateManager()
+    static let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    @Published var automatic = UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(automatic, forKey: "autoCheckUpdates") }
+    }
+    @Published private(set) var available: WubiUpdate?
+    @Published private(set) var busy = false
+    @Published private(set) var message = ""
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 7
+        configuration.timeoutIntervalForResource = 35
+        return URLSession(configuration: configuration)
+    }()
+    private var schedule: Timer?
+
+    func start() {
+        guard schedule == nil else { return }
+        schedule = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { _ in
+            Task { @MainActor in Self.shared.checkWhenDue() }
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            checkWhenDue()
+        }
+    }
+
+    private func checkWhenDue() {
+        let last = UserDefaults.standard.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
+        if automatic && Date().timeIntervalSince(last) >= 86_400 { check() }
+    }
+
+    func check() {
+        guard !busy else { return }
+        busy = true
+        message = "正在检查更新…"
+        Task {
+            defer { busy = false }
+            do {
+                available = try await UpdateTransport.first(for: UpdateCatalog.api) { url in
+                    let data = try await fetch(url, max: 768 * 1024, api: true)
+                    return try UpdateCatalog.newest(in: data, newerThan: Self.current)
+                }
+                UserDefaults.standard.set(Date(), forKey: "lastUpdateCheck")
+                if let available { message = "可以更新到 \(available.version)。" }
+                else { message = "已是最新版本。" }
+            } catch {
+                message = "各更新源暂时无法连接或返回了无效数据。"
+            }
+        }
+    }
+
+    func download() {
+        guard let available, !busy else { return }
+        busy = true
+        message = "正在下载并校验安装器…"
+        Task {
+            defer { busy = false }
+            do {
+                let bytes = try await UpdateTransport.first(for: available.url) { url in
+                    let data = try await fetch(url, max: available.bytes, api: false)
+                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    guard data.count == available.bytes, digest == available.sha256 else {
+                        throw URLError(.cannotDecodeContentData)
+                    }
+                    return data
+                }
+                let installer = try await Task.detached(priority: .utility) {
+                    try Self.prepareInstaller(dmg: bytes, version: available.version)
+                }.value
+                NSWorkspace.shared.openApplication(at: installer, configuration: .init()) { _, error in
+                    Task { @MainActor in
+                        self.message = error == nil ? "已启动新版安装器。" : "安装器已校验，但 macOS 无法打开。"
+                    }
+                }
+            } catch {
+                message = "下载或签名校验失败，请稍后重试。"
+            }
+        }
+    }
+
+    private func fetch(_ url: URL, max size: Int, api: Bool) async throws -> Data {
+        var request = URLRequest(url: url)
+        if api {
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("WA Wubi Update", forHTTPHeaderField: "User-Agent")
+        }
+        let (stream, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url?.scheme == "https", http.expectedContentLength <= size else {
+            throw URLError(.badServerResponse)
+        }
+        var data = Data()
+        if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
+        for try await byte in stream {
+            guard data.count < size else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(byte)
+        }
+        return data
+    }
+
+    nonisolated private static func prepareInstaller(dmg: Data, version: String) throws -> URL {
+        let files = FileManager.default
+        let folder = files.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("top.fuluwa.inputmethod.Wubi86/updates", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let point = folder.appendingPathComponent("mount", isDirectory: true)
+        let image = folder.appendingPathComponent("WA-Wubi.dmg")
+        try files.createDirectory(at: point, withIntermediateDirectories: true)
+        var complete = false
+        defer { if !complete { try? files.removeItem(at: folder) } }
+        try dmg.write(to: image, options: .atomic)
+        let team = try signingTeam()
+        try verifySignature(at: image, identifier: "top.fuluwa.WAWubiInstaller.Image", team: team)
+        try hdiutil(["attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", point.path, image.path])
+        defer { try? hdiutil(["detach", point.path]) }
+
+        let installer = point.appendingPathComponent("安装 WA 五笔.app", isDirectory: true)
+        guard Bundle(url: installer)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        try verifySignature(at: installer, identifier: "top.fuluwa.WAWubiInstaller", team: team)
+        let copy = folder.appendingPathComponent("安装 WA 五笔.app", isDirectory: true)
+        try files.copyItem(at: installer, to: copy)
+        try verifySignature(at: copy, identifier: "top.fuluwa.WAWubiInstaller", team: team)
+        try? files.removeItem(at: image)
+        complete = true
+        return copy
+    }
+
+    nonisolated private static func signingTeam() throws -> String {
+        var running: SecStaticCode?
+        var signing: CFDictionary?
+        guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &running) == errSecSuccess,
+              let running, SecCodeCopySigningInformation(running, SecCSFlags(rawValue: kSecCSSigningInformation), &signing) == errSecSuccess,
+              let fields = signing as? [String: Any], let team = fields[kSecCodeInfoTeamIdentifier as String] as? String,
+              team.utf8.count == 10, team.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return team
+    }
+
+    nonisolated private static func verifySignature(at url: URL, identifier: String, team: String) throws {
+        var candidate: SecStaticCode?
+        var requirement: SecRequirement?
+        let identity = """
+            identifier "\(identifier)" and anchor apple generic and notarized and
+            certificate leaf[subject.OU] = "\(team)" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists
+            """
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &candidate) == errSecSuccess, let candidate,
+              SecRequirementCreateWithString(identity as CFString, [], &requirement) == errSecSuccess,
+              SecStaticCodeCheckValidity(candidate, SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures),
+                                         requirement) == errSecSuccess else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+
+    nonisolated private static func hdiutil(_ arguments: [String]) throws {
+        let tool = Process()
+        tool.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        tool.arguments = arguments
+        tool.standardOutput = FileHandle.nullDevice
+        tool.standardError = FileHandle.nullDevice
+        try tool.run()
+        tool.waitUntilExit()
+        guard tool.terminationStatus == 0 else { throw CocoaError(.fileReadCorruptFile) }
+    }
+}
+
+struct UpdateSettings: View {
+    @ObservedObject var manager: UpdateManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("已安装 \(UpdateManager.current)").foregroundStyle(.secondary)
+            Toggle("自动检查更新", isOn: $manager.automatic)
+            HStack {
+                Button("检查更新", action: manager.check).disabled(manager.busy)
+                if manager.available != nil {
+                    Button("下载安装器", action: manager.download).disabled(manager.busy)
+                }
+                if manager.busy { ProgressView().controlSize(.small) }
+            }
+            if !manager.message.isEmpty { Text(manager.message).foregroundStyle(.secondary) }
+        }
+    }
+}

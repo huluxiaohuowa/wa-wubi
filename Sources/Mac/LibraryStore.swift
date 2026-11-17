@@ -35,6 +35,9 @@ final class LibraryStore: ObservableObject {
     private let device: String
     private let local = applicationSupport.appendingPathComponent("state.json")
     private var snapshot = Snapshot()
+    private let rankingFile = applicationSupport.appendingPathComponent("candidate-ranking.json")
+    private var ranking: [String: [String: Int]] = [:]
+    private var rankSave: DispatchWorkItem?
     private var cloudIdentity: Data?
     private var timer: Timer?
     private var cloudDirty = true
@@ -49,6 +52,8 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: local),
            let saved = try? JSONDecoder().decode(Snapshot.self, from: data),
            saved.version == Snapshot.format { snapshot = saved }
+        if let data = try? Data(contentsOf: rankingFile),
+           let saved = try? JSONDecoder().decode([String: [String: Int]].self, from: data) { ranking = saved }
         preferences.cloud = defaults.bool(forKey: "syncEnabled")
         if let path = defaults.string(forKey: "syncPath") { cloudFolder = URL(fileURLWithPath: path, isDirectory: true) }
         cloudIdentity = defaults.data(forKey: "syncIdentity")
@@ -89,13 +94,46 @@ final class LibraryStore: ObservableObject {
 
     func candidates(_ mode: Composition.Mode, _ code: String) -> [Candidate] {
         if mode == .pinyin { return pinyin[code, default: []] }
-        if code == "zz" {
+        if code == "zz", preferences.zFunction {
             return ["※", "—", "…", "·", "✓", "×", "→", "←", "↑", "↓", "★", "☆", "〇", "□", "■", "①", "②", "③"].map { Candidate($0) }
         }
-        let words = lexicon.exact(code, extra: extras[code, default: []], edits: edits[code, default: [:]])
+        var words = lexicon.exact(code, extra: extras[code, default: []], edits: edits[code, default: [:]],
+                                  includeContinuations: preferences.showContinuations)
+        if preferences.singleCharacters {
+            words = words.filter { $0.word.count == 1 }
+        }
+        if preferences.automaticallyRanks {
+            words = lexicon.ranked(words, code: code, scores: ranking[code, default: [:]],
+                                   edits: edits[code, default: [:]], includesFixed: preferences.rankingRange == .all)
+        }
         guard preferences.mixedPinyin else { return words }
         let known = Set(words.map(\.word))
-        return words + pinyin[code, default: []].filter { !known.contains($0.word) }
+        return words + pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+    }
+
+    func record(_ selections: [Composition.Selection]) {
+        guard preferences.automaticallyRanks, !selections.isEmpty else { return }
+        var changed = false
+        for selection in selections where Entry.validCode(selection.code) {
+            let isProtected = lexicon.isFixedWord(selection.word) || (selection.code.count == 1 &&
+                candidates(.wubi, selection.code).prefix(2).contains { $0.word == selection.word })
+            if isProtected && preferences.rankingRange == .ordinary { continue }
+            let amount = ranking[selection.code]?[selection.word] ?? 0
+            guard amount < 1_000_000, amount > 0 || ranking[selection.code, default: [:]].count < 128 else { continue }
+            ranking[selection.code, default: [:]][selection.word] = amount + 1
+            changed = true
+        }
+        guard changed else { return }
+        rankSave?.cancel()
+        let action = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            do {
+                try FileManager.default.createDirectory(at: Self.applicationSupport, withIntermediateDirectories: true)
+                try JSONEncoder().encode(self.ranking).write(to: self.rankingFile, options: .atomic)
+            } catch { self.status = "无法保存候选词使用顺序。" }
+        }
+        rankSave = action
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: action)
     }
 
     func update(_ change: (inout Preferences) -> Void) {
@@ -146,6 +184,21 @@ final class LibraryStore: ObservableObject {
     func remove(_ entry: Entry) {
         snapshot.set("personal/\(entry.code)/\(entry.word)", to: nil, device: device)
         snapshot.set("edit/\(entry.code)/\(entry.word)", to: nil, device: device)
+        reload()
+        persist()
+        sync()
+    }
+
+    func replacePersonal(with entries: [Entry]) {
+        let existing = Set(groups.first(where: { $0.id == "personal" })?.entries ?? [])
+        let replacement = Set(entries)
+        for entry in existing.subtracting(replacement) {
+            snapshot.set("personal/\(entry.code)/\(entry.word)", to: nil, device: device)
+            snapshot.set("edit/\(entry.code)/\(entry.word)", to: nil, device: device)
+        }
+        for entry in replacement.subtracting(existing) {
+            set("personal/\(entry.code)/\(entry.word)", entry)
+        }
         reload()
         persist()
         sync()

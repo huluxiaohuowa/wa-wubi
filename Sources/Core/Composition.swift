@@ -4,9 +4,40 @@ public enum CandidateTheme: String, CaseIterable, Codable, Sendable {
     case system, ink, paper, indigo
 }
 
+public enum AppLanguage: String, Codable, Sendable, CaseIterable {
+    case chinese, english
+}
+
+public struct AppLanguageRule: Codable, Equatable, Sendable {
+    public var name: String
+    public var language: AppLanguage
+    public init(name: String, language: AppLanguage) {
+        self.name = name
+        self.language = language
+    }
+}
+
+public enum RankingRange: String, Codable, Sendable {
+    case ordinary, all
+}
+
 public struct Preferences: Codable, Equatable, Sendable {
     public var theme = CandidateTheme.system
     public var punctuationOverrides: [String: String] = [:]
+    public var appRules: [String: AppLanguageRule] = [:]
+    public var automaticallyRanks = true
+    public var rankingRange = RankingRange.ordinary
+    public var candidateCount = 9
+    public var showContinuations = true
+    public var fifthKeyCommits = true
+    public var returnSelectsCandidate = false
+    public var commaPaging = false
+    public var singleCharacters = false
+    public var semicolonMode = true
+    public var zFunction = true
+    public var modeHints = true
+    public var pairedQuotes = true
+    public var customPunctuation = true
     public var opacity = 0.96
     public var fontSize = 19.0
     public var vertical = false
@@ -30,12 +61,18 @@ public struct Composition {
         case letter(Character), number(Int), space, returnKey, backspace, escape
         case next, previous, forward, backward, semicolon, apostrophe, backtick, punctuation(Character)
     }
+    public struct Selection: Equatable {
+        public let code: String
+        public let word: String
+    }
     public struct Result: Equatable {
         public var handled: Bool
         public var text: String
-        public init(_ handled: Bool = true, _ text: String = "") {
+        public var selections: [Selection]
+        public init(_ handled: Bool = true, _ text: String = "", selections: [Selection] = []) {
             self.handled = handled
             self.text = text
+            self.selections = selections
         }
     }
 
@@ -48,10 +85,10 @@ public struct Composition {
     public private(set) var english = false
     private var openDouble = true
     private var openSingle = true
-    public static let pageSize = 5
-    public var visible: [Candidate] { Array(candidates.dropFirst(page * Self.pageSize).prefix(Self.pageSize)) }
+    public private(set) var pageSize = 9
+    public var visible: [Candidate] { Array(candidates.dropFirst(page * pageSize).prefix(pageSize)) }
     public var active: Bool { !code.isEmpty || mode != .wubi }
-    public var pageCount: Int { max(1, (candidates.count + Self.pageSize - 1) / Self.pageSize) }
+    public var pageCount: Int { max(1, (candidates.count + pageSize - 1) / pageSize) }
 
     public init() {}
 
@@ -77,15 +114,23 @@ public struct Composition {
 
     public mutating func accept(index: Int, raw: Bool = false, fallback: Bool = true) -> Result {
         let list = visible
-        let value = !raw && list.indices.contains(index) ? list[index].word : (fallback ? code : "")
+        let selected = !raw && list.indices.contains(index) ? list[index] : nil
+        let value = selected?.word ?? (fallback ? code : "")
         if !fallback && value.isEmpty { return Result() }
+        let selections: [Selection] = mode == .wubi && selected != nil ? [Selection(code: code, word: value)] : []
         reset()
         if !value.isEmpty { last = value }
-        return Result(true, value)
+        return Result(true, value, selections: selections)
     }
 
     public mutating func handle(_ key: Key, preferences: Preferences, lookup: (Mode, String) -> [Candidate]) -> Result {
         if english { return Result(false) }
+        let newSize = min(9, max(3, preferences.candidateCount))
+        if pageSize != newSize {
+            pageSize = newSize
+            page = 0
+            selected = 0
+        }
         switch key {
         case .escape:
             guard active else { return Result(false) }
@@ -105,7 +150,7 @@ public struct Composition {
                 last = converted
                 return Result(true, converted)
             }
-            return active ? accept(index: selected, raw: true) : Result(false)
+            return active ? accept(index: selected, raw: !preferences.returnSelectsCandidate) : Result(false)
         case .space:
             if mode == .english {
                 if let converted = Self.convertEnglishTools(code) {
@@ -119,7 +164,7 @@ public struct Composition {
             return active ? accept(index: selected) : Result(false)
         case .number(let number):
             if mode == .english { code += String(number) }
-            else if active, (1...Self.pageSize).contains(number) {
+            else if active, (1...pageSize).contains(number) {
                 return accept(index: number - 1, fallback: false)
             } else { return Result(false) }
         case .next, .previous:
@@ -128,13 +173,13 @@ public struct Composition {
             selected = 0
         case .forward, .backward:
             guard !candidates.isEmpty else { return Result(false) }
-            let index = min(candidates.count - 1, max(0, page * Self.pageSize + selected + (key == .forward ? 1 : -1)))
-            page = index / Self.pageSize
-            selected = index % Self.pageSize
+            let index = min(candidates.count - 1, max(0, page * pageSize + selected + (key == .forward ? 1 : -1)))
+            page = index / pageSize
+            selected = index % pageSize
         case .semicolon:
             if mode == .english { code += ";" }
             else if !candidates.isEmpty, preferences.semicolonSelect { return accept(index: 1, fallback: false) }
-            else if !active { mode = .english }
+            else if !active && preferences.semicolonMode { mode = .english }
             else { return punctuate(";", preferences: preferences) }
         case .apostrophe:
             if mode == .english { code += "'" }
@@ -157,33 +202,32 @@ public struct Composition {
                 return Result()
             }
             let letter = Character(character.lowercased())
-            if mode == .wubi, code == "z", letter != "z", !last.isEmpty {
+            if preferences.zFunction, mode == .wubi, code == "z", letter != "z", !last.isEmpty {
                 let repeated = last
                 reset()
                 _ = handle(.letter(letter), preferences: preferences, lookup: lookup)
                 return Result(true, repeated)
             }
-            var prefix = ""
+            var prefix = Result()
             if mode == .wubi, code.count == 4, !preferences.mixedPinyin || !candidates.isEmpty {
                 if candidates.isEmpty, preferences.emptyToEnglish {
                     mode = .english
                     code.append(character)
                     return Result()
                 }
-                prefix = accept(index: selected).text
+                guard preferences.fifthKeyCommits else { return Result() }
+                prefix = accept(index: 0)
             }
             guard code.count < 32 else { return Result() }
             code.append(letter)
             page = 0
             selected = 0
             refresh(lookup)
-            let keyName = code.count == 4 && code.first.map { first in
-                Lexicon.roots[first] != nil && code.allSatisfy { $0 == first }
-            } == true
-            if mode == .wubi, preferences.autoCommit, code.count == 4, candidates.count == 1, !keyName {
-                return Result(true, prefix + accept(index: 0).text)
+            if mode == .wubi, preferences.autoCommit, code.count == 4, candidates.count == 1 {
+                let selected = accept(index: 0)
+                return Result(true, prefix.text + selected.text, selections: prefix.selections + selected.selections)
             }
-            return Result(true, prefix)
+            return prefix
         }
         return Result()
     }
@@ -227,22 +271,25 @@ public struct Composition {
     }
 
     private mutating func punctuate(_ character: Character, preferences: Preferences) -> Result {
-        let prefix = active ? accept(index: selected).text : ""
-        guard preferences.chinesePunctuation else { return Result(false, prefix) }
-        if let mark = preferences.punctuationOverrides[String(character)] {
-            return Result(true, prefix + mark)
+        let prefix = active ? accept(index: selected) : Result()
+        func withMark(_ mark: String) -> Result {
+            Result(true, prefix.text + mark, selections: prefix.selections)
+        }
+        guard preferences.chinesePunctuation else { return Result(false, prefix.text, selections: prefix.selections) }
+        if preferences.customPunctuation, let mark = preferences.punctuationOverrides[String(character)] {
+            return withMark(mark)
         }
         if character == "\"" {
             let mark = openDouble ? (preferences.cornerQuotes ? "「" : "“") : (preferences.cornerQuotes ? "」" : "”")
-            openDouble.toggle()
-            return Result(true, prefix + mark)
+            if preferences.pairedQuotes { openDouble.toggle() } else { openDouble = true }
+            return withMark(mark)
         }
         if character == "'" {
             let mark = openSingle ? (preferences.cornerQuotes ? "『" : "‘") : (preferences.cornerQuotes ? "』" : "’")
-            openSingle.toggle()
-            return Result(true, prefix + mark)
+            if preferences.pairedQuotes { openSingle.toggle() } else { openSingle = true }
+            return withMark(mark)
         }
         let marks: [Character: String] = [",":"，", ".":"。", ";":"；", ":":"：", "?":"？", "!":"！", "(":"（", ")":"）", "[":"【", "]":"】", "<":"《", ">":"》", "\\":"、", "^":"……", "_":"——"]
-        return marks[character].map { Result(true, prefix + $0) } ?? Result(false, prefix)
+        return marks[character].map(withMark) ?? Result(false, prefix.text, selections: prefix.selections)
     }
 }

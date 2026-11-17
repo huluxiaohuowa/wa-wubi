@@ -38,6 +38,8 @@ public final class Lexicon: @unchecked Sendable {
 
     private let table: [String: [Entry]]
     private let stems: [String: String]
+    private let sortedCodes: [String]
+    private let fixedWords: Set<String>
 
     public init(_ entries: [Entry], stems suppliedStems: [String: String] = [:]) {
         table = Dictionary(grouping: entries, by: \.code).mapValues { rows in
@@ -45,6 +47,8 @@ public final class Lexicon: @unchecked Sendable {
                 $0.element.weight == $1.element.weight ? $0.offset < $1.offset : $0.element.weight > $1.element.weight
             }.map(\.element)
         }
+        sortedCodes = table.keys.sorted()
+        fixedWords = Set(Self.roots.values).union(entries.lazy.filter { $0.code.count == 1 }.map(\.word))
         var stems = suppliedStems
         for entry in entries where entry.word.count == 1 && entry.code.count >= 2 {
             if stems[entry.word, default: ""].count < entry.code.count {
@@ -86,26 +90,84 @@ public final class Lexicon: @unchecked Sendable {
         }
     }
 
-    public func exact(_ code: String, extra: [Entry] = [], edits: [String: WordEdit] = [:]) -> [Candidate] {
+    public func exact(_ code: String, extra: [Entry] = [], edits: [String: WordEdit] = [:],
+                      includeContinuations: Bool = true) -> [Candidate] {
         let base = table[code, default: []]
         let preferred = edits.values.filter { $0.pinned && !$0.hidden }.sorted { $0.word < $1.word }
         var seen = Set<String>()
         var words = (preferred.map(\.word) + base.map(\.word) + extra.map(\.word)).filter {
             edits[$0]?.hidden != true && seen.insert($0).inserted
         }
-        if let first = code.first, let root = Self.roots[first],
-           code.count == 4, code.allSatisfy({ $0 == first }) {
+        let root = code.first.flatMap { Self.roots[$0] }
+        if let root, let first = code.first, code.count == 4, code.allSatisfy({ $0 == first }) {
             words.removeAll { $0 == root }
-            if words.isEmpty, let short = table[String(first)]?.first(where: { $0.word != root })?.word {
-                words.append(short)
-            }
-            if words.isEmpty {
-                // A repeated key whose short code equals its key name still needs a selectable first slot.
-                words.append(code)
-            }
-            words.insert(root, at: 1)
+            words.insert(root, at: 0)
+            return words.map { Candidate($0) }
         }
-        return words.map { Candidate($0) }
+
+        let shortRoot = code.count == 1 ? root : nil
+        if let shortRoot { words.removeAll { $0 == shortRoot } }
+        var candidates = words.map { Candidate($0) }
+        if includeContinuations || (shortRoot != nil && candidates.isEmpty) {
+            var exactWords = Set(words)
+            if let shortRoot { exactWords.insert(shortRoot) }
+            let hints = continuationCandidates(for: code, excluding: exactWords, edits: edits)
+            if includeContinuations {
+                candidates += hints
+            } else if let first = hints.first {
+                candidates.append(Candidate(first.word))
+            }
+        }
+        if let shortRoot {
+            if candidates.isEmpty { candidates.append(Candidate(code)) }
+            candidates.insert(Candidate(shortRoot), at: 1)
+        }
+        return candidates
+    }
+
+    private func continuationCandidates(for prefix: String, excluding: Set<String>,
+                                        edits: [String: WordEdit]) -> [Candidate] {
+        guard (1...3).contains(prefix.count) else { return [] }
+        var lower = 0
+        var upper = sortedCodes.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if sortedCodes[middle] < prefix { lower = middle + 1 }
+            else { upper = middle }
+        }
+        var results: [Candidate] = []
+        for code in sortedCodes[lower...] {
+            guard code.hasPrefix(prefix) else { break }
+            guard code.count > prefix.count else { continue }
+            let suffix = String(code.dropFirst(prefix.count))
+            var seen = Set<String>()
+            for entry in table[code, default: []] where !excluding.contains(entry.word) &&
+              edits[entry.word]?.hidden != true && seen.insert(entry.word).inserted {
+                results.append(Candidate(entry.word, hint: suffix))
+                if results.count == 72 { return results }
+            }
+        }
+        return results
+    }
+
+    public func isFixedWord(_ word: String) -> Bool { fixedWords.contains(word) }
+
+    public func ranked(_ candidates: [Candidate], code: String, scores: [String: Int],
+                       edits: [String: WordEdit], includesFixed: Bool) -> [Candidate] {
+        guard !scores.isEmpty else { return candidates }
+        let positions = candidates.indices.filter { index in
+            let word = candidates[index].word
+            guard edits[word]?.pinned != true else { return false }
+            return includesFixed || (!isFixedWord(word) && (code.count != 1 || index > 1))
+        }
+        let sorted = positions.sorted {
+            let prior = scores[candidates[$0].word, default: 0]
+            let next = scores[candidates[$1].word, default: 0]
+            return prior == next ? $0 < $1 : prior > next
+        }
+        var result = candidates
+        for (position, source) in zip(positions, sorted) { result[position] = candidates[source] }
+        return result
     }
 
     public func pinyinIndex() -> [String: [Candidate]] {

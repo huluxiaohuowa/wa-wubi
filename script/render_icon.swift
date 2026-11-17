@@ -60,7 +60,7 @@ func draw(_ template: Bool) {
     context?.restoreGState()
 }
 
-func render(size: Int, template: Bool = false) throws -> Data {
+func render(size: Int, template: Bool = false, artwork: NSImage? = nil, normalize: Bool = false) throws -> Data {
     guard let pixels = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
         bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: pixels) else {
@@ -71,7 +71,18 @@ func render(size: Int, template: Bool = false) throws -> Data {
     let scale = CGFloat(size) / (template ? 72 : 100)
     context.cgContext.scaleBy(x: scale, y: scale)
     if template { context.cgContext.translateBy(x: -14, y: -11) }
-    draw(template)
+    if let artwork {
+        if normalize {
+            let frame = NSRect(x: 5, y: 5, width: 90, height: 90)
+            let tile = NSBezierPath(roundedRect: frame, xRadius: 23, yRadius: 23)
+            tile.addClip()
+            color(0.95, 0.93, 0.91).setFill()
+            tile.fill()
+        }
+        artwork.draw(in: NSRect(x: 0, y: 0, width: 100, height: 100), from: .zero, operation: .sourceOver, fraction: 1)
+    } else {
+        draw(template)
+    }
     NSGraphicsContext.restoreGraphicsState()
     guard let png = pixels.representation(using: .png, properties: [:]) else {
         throw CocoaError(.coderInvalidValue)
@@ -79,12 +90,17 @@ func render(size: Int, template: Bool = false) throws -> Data {
     return png
 }
 
-try render(size: 512).write(to: output.appendingPathComponent("BrandIcon.png"))
+let brand = output.appendingPathComponent("BrandIcon.png")
+if CommandLine.arguments.count == 4 {
+    guard let sample = NSImage(contentsOfFile: CommandLine.arguments[3]) else { throw CocoaError(.fileReadCorruptFile) }
+    try render(size: 1024, artwork: sample, normalize: true).write(to: brand)
+}
+guard let artwork = NSImage(contentsOf: brand) else { throw CocoaError(.fileReadCorruptFile) }
 try render(size: 18, template: true).write(to: output.appendingPathComponent("InputIcon.png"))
 try render(size: 36, template: true).write(to: output.appendingPathComponent("InputIcon@2x.png"))
 for point in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
         let suffix = scale == 2 ? "@2x" : ""
-        try render(size: point * scale).write(to: iconset.appendingPathComponent("icon_\(point)x\(point)\(suffix).png"))
+        try render(size: point * scale, artwork: artwork).write(to: iconset.appendingPathComponent("icon_\(point)x\(point)\(suffix).png"))
     }
 }

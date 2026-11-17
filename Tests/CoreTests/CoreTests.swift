@@ -7,22 +7,116 @@ final class CoreTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Resources/wubi86.dict.yaml"), encoding: .utf8))
 
-    func testEveryFourKeyNameOccupiesSecondSlot() {
+    func testEveryKeyNameIsSecondAtOneKeyAndFirstAtFullCode() {
         XCTAssertEqual(Lexicon.roots.count, 25)
+        let keys: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
+        let prefs = Preferences()
         for (key, name) in Lexicon.roots {
-            let code = String(repeating: String(key), count: 4)
-            let candidates = lexicon.exact(code, extra: [Entry("测试词", code, weight: Int.max)],
-                                           edits: [name: WordEdit(name, pinned: true, hidden: true)])
-            XCTAssertEqual(candidates.dropFirst().first?.word, name, code)
-            XCTAssertEqual(candidates.filter { $0.word == name }.count, 1)
+            let short = String(key)
+            let full = String(repeating: short, count: 4)
+            let hiddenRoot = [name: WordEdit(name, pinned: true, hidden: true)]
+            let shortRows = lexicon.exact(short, extra: [Entry(name, short)], edits: hiddenRoot)
+            XCTAssertEqual(shortRows.dropFirst().first?.word, name, short)
+            XCTAssertEqual(shortRows.filter { $0.word == name }.count, 1, short)
+            let fullRows = lexicon.exact(full, extra: [Entry(name, full)], edits: hiddenRoot)
+            XCTAssertEqual(fullRows.first?.word, name, full)
+            XCTAssertEqual(fullRows.filter { $0.word == name }.count, 1, full)
             var state = Composition()
-            var preferences = Preferences()
-            preferences.autoCommit = true
+            _ = state.handle(.letter(key), preferences: prefs, lookup: keys)
+            XCTAssertEqual(state.handle(.semicolon, preferences: prefs, lookup: keys).text, name, short)
             for _ in 0..<4 {
-                XCTAssertEqual(state.handle(.letter(key), preferences: preferences) { _, code in self.lexicon.exact(code) }.text, "")
+                XCTAssertEqual(state.handle(.letter(key), preferences: prefs, lookup: keys).text, "")
             }
-            XCTAssertEqual(state.handle(.semicolon, preferences: preferences) { _, _ in [] }.text, name)
+            XCTAssertEqual(state.handle(.space, preferences: prefs, lookup: keys).text, name, full)
         }
+        XCTAssertEqual(lexicon.exact("i").prefix(2).map(\.word), ["不", "水"])
+        XCTAssertEqual(lexicon.exact("o").prefix(2).map(\.word), ["为", "火"])
+    }
+
+    func testCandidateLearningKeepsDefaultProtectedPositions() {
+        let baseline = Array(lexicon.exact("i").prefix(4))
+        let name = baseline[1].word
+        let related = baseline[3].word
+        let scores = [name: 20, related: 10]
+        let normal = lexicon.ranked(baseline, code: "i", scores: scores, edits: [:], includesFixed: false)
+        XCTAssertEqual(normal.prefix(2), baseline.prefix(2))
+        XCTAssertEqual(normal[2].word, related)
+        let all = lexicon.ranked(baseline, code: "i", scores: scores, edits: [:], includesFixed: true)
+        XCTAssertEqual(all.first?.word, name)
+        let pinned = lexicon.ranked(baseline, code: "i", scores: scores,
+                                    edits: [baseline[0].word: WordEdit(baseline[0].word, pinned: true)],
+                                    includesFixed: true)
+        XCTAssertEqual(pinned.first?.word, baseline[0].word)
+    }
+
+    func testMixedCodesAndCandidateSelectionRecords() {
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
+        var state = Composition()
+        let prefs = Preferences()
+        for (code, expected) in [("i", "不"), ("ia", "江"), ("dwt", "秦"), ("ggtt", "五笔")] {
+            for letter in code {
+                _ = state.handle(.letter(letter), preferences: prefs, lookup: lookup)
+                XCTAssertFalse(state.candidates.isEmpty, state.code)
+            }
+            let result = state.handle(.space, preferences: prefs, lookup: lookup)
+            XCTAssertEqual(result.text, expected, code)
+            XCTAssertEqual(result.selections.first?.code, code)
+            XCTAssertEqual(result.selections.first?.word, expected)
+        }
+    }
+
+    func testContinuationsAppearBeforeFullCodeWithRemainingLetters() {
+        let rows = lexicon.exact("ij")
+        XCTAssertEqual(rows.first?.word, "浊")
+        XCTAssertGreaterThanOrEqual(rows.count, 9)
+        XCTAssertTrue(rows.dropFirst().contains { !$0.hint.isEmpty })
+        XCTAssertEqual(lexicon.exact("ij", includeContinuations: false), [Candidate("浊")])
+        XCTAssertTrue(lexicon.exact("ggt").contains { $0.word == "五笔" && $0.hint == "t" })
+    }
+
+    func testCandidateCountAndEnterBehavior() {
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
+        var state = Composition()
+        var preferences = Preferences()
+        preferences.candidateCount = 9
+        preferences.returnSelectsCandidate = true
+        _ = state.handle(.letter("i"), preferences: preferences, lookup: lookup)
+        XCTAssertEqual(state.visible.count, 9)
+        XCTAssertEqual(state.handle(.returnKey, preferences: preferences, lookup: lookup).text, "不")
+        preferences.fifthKeyCommits = false
+        for _ in 0..<4 { _ = state.handle(.letter("i"), preferences: preferences, lookup: lookup) }
+        XCTAssertTrue(state.handle(.letter("a"), preferences: preferences, lookup: lookup).text.isEmpty)
+        XCTAssertEqual(state.code, "iiii")
+    }
+
+    func testUpdateTransportTriesDirectThenMirrors() async throws {
+        let origin = UpdateCatalog.api
+        var attempts: [String] = []
+        let value = try await UpdateTransport.first(for: origin) { source in
+            attempts.append(source.host ?? "")
+            guard source.host == "gh-proxy.com" else { throw URLError(.cannotConnectToHost) }
+            return "valid"
+        }
+        XCTAssertEqual(value, "valid")
+        XCTAssertEqual(attempts, ["api.github.com", "ghfast.top", "gh-proxy.com"])
+    }
+
+    func testUpdateCatalogUsesVersionAndChecksAssetURL() throws {
+        let digest = String(repeating: "a", count: 64)
+        let json = """
+        [
+          {"tag_name":"v0.1.18","draft":true,"assets":[]},
+          {"tag_name":"v0.1.9","draft":false,"assets":[{"name":"WA-Wubi-0.1.9.dmg",
+            "browser_download_url":"https://example.com/WA-Wubi-0.1.9.dmg","size":10,"digest":"sha256:\(digest)"}]},
+          {"tag_name":"v0.1.10","draft":false,"assets":[{"name":"WA-Wubi-0.1.10.dmg",
+            "browser_download_url":"https://github.com/huluxiaohuowa/wa-wubi/releases/download/v0.1.10/WA-Wubi-0.1.10.dmg",
+            "size":10,"digest":"sha256:\(digest)"}]}
+        ]
+        """
+        let result = try UpdateCatalog.newest(in: Data(json.utf8), newerThan: "0.1.5")
+        XCTAssertEqual(result?.version, "0.1.10")
+        XCTAssertEqual(result?.sha256, digest)
+        XCTAssertNil(try UpdateCatalog.newest(in: Data(json.utf8), newerThan: "0.1.10"))
     }
 
     func testShiftAndTemporaryEnglish() {

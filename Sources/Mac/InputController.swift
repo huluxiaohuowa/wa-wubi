@@ -11,6 +11,7 @@ final class InputController: IMKInputController {
     private let speech = SpeechCapture()
     private var state = Composition()
     private var shiftPressed = false
+    private var boundLanguage = false
     private var speaking = false
     private var statusText: String?
     private var statusClear: DispatchWorkItem?
@@ -24,7 +25,12 @@ final class InputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         Self.activeController = self
-        if state.english != Self.english { _ = state.toggleEnglish() }
+        let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let language = appID.flatMap { store.preferences.appRules[$0]?.language }
+        boundLanguage = language != nil
+        let english = language.map { $0 == .english } ?? Self.english
+        if state.english != english { _ = state.toggleEnglish() }
         shiftPressed = false
         super.activateServer(sender)
         if observation == nil {
@@ -85,7 +91,7 @@ final class InputController: IMKInputController {
             return false
         }
         if store.loading && !state.english { return false }
-        if state.code == "z", key == .space, !state.last.isEmpty {
+        if store.preferences.zFunction, state.code == "z", key == .space, !state.last.isEmpty {
             let word = state.last
             state.reset()
             apply(.init(true, word), to: target)
@@ -121,8 +127,9 @@ final class InputController: IMKInputController {
         defer { shiftPressed = false }
         if flags.isEmpty && shiftPressed {
             apply(state.toggleEnglish(), to: target)
-            Self.english = state.english
-            notify(state.english ? "A · 英文" : "五 · 中文", at: target)
+            if !boundLanguage { Self.english = state.english }
+            if store.preferences.modeHints { notify(state.english ? "A · 英文" : "五 · 中文", at: target) }
+            else { draw(target) }
         }
         return false
     }
@@ -193,6 +200,10 @@ final class InputController: IMKInputController {
         if !state.candidates.isEmpty {
             if [27, 33].contains(event.keyCode) { return .previous }
             if [24, 30].contains(event.keyCode) { return .next }
+            if store.preferences.commaPaging {
+                if event.keyCode == 43 { return .previous }
+                if event.keyCode == 47 { return .next }
+            }
         }
         if state.mode == .english, let value = event.characters?.first, !value.isNewline {
             return .punctuation(value)
@@ -215,9 +226,18 @@ final class InputController: IMKInputController {
             SettingsWindow.shared.open(.lexicon)
             return true
         }
+        if flags == [.control], event.keyCode == 47 {
+            store.update { $0.chinesePunctuation.toggle() }
+            if store.preferences.modeHints {
+                notify(store.preferences.chinesePunctuation ? "中文标点" : "英文标点", at: target)
+            }
+            return true
+        }
         if flags == [.control, .option], event.keyCode == 17 {
             store.update { $0.traditional.toggle() }
-            notify(store.preferences.traditional ? "繁 · 輸簡出繁" : "简 · 简体", at: target)
+            if store.preferences.modeHints {
+                notify(store.preferences.traditional ? "繁 · 輸簡出繁" : "简 · 简体", at: target)
+            }
             return true
         }
         if flags == [.control], event.keyCode == 24 || event.keyCode == 27 {
@@ -227,7 +247,7 @@ final class InputController: IMKInputController {
             SettingsWindow.shared.open(.lexicon, word: selected ?? state.last, delete: event.keyCode == 27)
             return true
         }
-        let digitKeys = [18, 19, 20, 21, 23]
+        let digitKeys = [18, 19, 20, 21, 23, 22, 26, 28, 25]
         guard state.mode == .wubi, flags == [.control] || flags == [.control, .shift],
               let index = digitKeys.firstIndex(of: Int(event.keyCode)), state.visible.indices.contains(index) else { return false }
         edit(index, target: target, hide: flags.contains(.shift))
@@ -246,6 +266,7 @@ final class InputController: IMKInputController {
         let value = store.preferences.traditional ?
             result.text.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? result.text : result.text
         target.insertText(value, replacementRange: replacement)
+        store.record(result.selections)
     }
 
     private func caret(_ target: IMKTextInput) -> CGRect {
@@ -308,7 +329,8 @@ final class InputController: IMKInputController {
         let items: [(String, Selector)] = [
             ("WA 五笔设置…", #selector(openSettings(_:))),
             ("词库管理…", #selector(openLexicon(_:))),
-            (Self.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:))),
+            (state.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:))),
+            ("检查更新…", #selector(checkUpdates(_:))),
             ("使用指南", #selector(openGuide(_:))),
         ]
         for (name, action) in items {
@@ -321,15 +343,21 @@ final class InputController: IMKInputController {
 
     @objc private func openSettings(_ sender: Any?) { SettingsWindow.shared.open() }
     @objc private func openLexicon(_ sender: Any?) { SettingsWindow.shared.open(.lexicon) }
+    @objc private func checkUpdates(_ sender: Any?) {
+        SettingsWindow.shared.open(.updates)
+        Task { @MainActor in UpdateManager.shared.check() }
+    }
+
     @objc private func openGuide(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://wa-wubi.fuluwa.top/")!)
     }
     @objc private func toggleLanguage(_ sender: Any?) {
         let result = state.toggleEnglish()
-        Self.english = state.english
+        if !boundLanguage { Self.english = state.english }
         if let target = client() {
             apply(result, to: target)
-            notify(state.english ? "A · 英文" : "五 · 中文", at: target)
+            if store.preferences.modeHints { notify(state.english ? "A · 英文" : "五 · 中文", at: target) }
+            else { draw(target) }
         }
     }
 }

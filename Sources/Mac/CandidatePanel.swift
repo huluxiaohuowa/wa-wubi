@@ -54,7 +54,7 @@ struct CandidateStrip: View {
                             Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
                             Text(candidates[index].word).font(.system(size: preferences.fontSize, weight: .medium))
                                 .lineLimit(1).truncationMode(.tail)
-                                .frame(maxWidth: preferences.vertical ? 220 : 137)
+                                .frame(maxWidth: preferences.vertical ? 220 : (preferences.candidateCount > 6 ? 78 : 137))
                             if !candidates[index].hint.isEmpty {
                                 Text(candidates[index].hint).font(.system(size: 10, design: .monospaced))
                             }

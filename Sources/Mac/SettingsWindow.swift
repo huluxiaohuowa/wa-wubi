@@ -5,7 +5,7 @@ import CryptoKit
 import WubiCore
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case appearance = "外观", input = "输入", lexicon = "词库", cloud = "同步", speech = "语音"
+    case appearance = "外观", input = "输入", lexicon = "词库", cloud = "同步", speech = "语音", punctuation = "标点", applications = "应用规则", updates = "更新", about = "关于"
     var id: Self { self }
     var symbol: String {
         switch self {
@@ -14,6 +14,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .lexicon: return "books.vertical"
         case .cloud: return "icloud"
         case .speech: return "waveform"
+        case .punctuation: return "number"
+        case .applications: return "square.grid.2x2"
+        case .updates: return "arrow.down.circle"
+        case .about: return "info.circle"
         }
     }
 }
@@ -87,6 +91,10 @@ struct SettingsView: View {
                     case .lexicon: LexiconSettings(model: model, store: store, catalog: catalog)
                     case .cloud: cloud
                     case .speech: SpeechSettings(store: store)
+                    case .punctuation: PunctuationSettings(store: store)
+                    case .applications: ApplicationSettings(store: store)
+                    case .updates: UpdateSettings(manager: .shared)
+                    case .about: AboutSettings()
                     }
                 }
                 .padding(28).frame(maxWidth: .infinity, alignment: .leading)
@@ -134,6 +142,9 @@ struct SettingsView: View {
                 Button("导出外观…") { exportTheme() }
                 if !themeMessage.isEmpty { Text(themeMessage).font(.caption).foregroundStyle(.secondary) }
             }
+            Picker("每页候选数量", selection: pref(\.candidateCount)) {
+                ForEach(3...9, id: \.self) { Text(String($0)).tag($0) }
+            }
             Picker("候选布局", selection: pref(\.vertical)) {
                 Text("横排").tag(false)
                 Text("竖排").tag(true)
@@ -180,7 +191,7 @@ struct SettingsView: View {
     }
 
     private var preview: some View {
-        CandidateStrip(code: "gggg", candidates: [Candidate("五一"), Candidate("王"), Candidate("琵琶")],
+        CandidateStrip(code: "g", candidates: [Candidate("一"), Candidate("王"), Candidate("表", hint: "e")],
                        current: 1, page: 0, pages: 1, preferences: store.preferences)
     }
 
@@ -194,22 +205,19 @@ struct SettingsView: View {
             Toggle("五笔与拼音混输", isOn: pref(\.mixedPinyin))
             Text("反引号进入临时拼音，候选旁显示五笔编码。").font(.caption).foregroundStyle(.secondary)
             Divider()
-            Toggle("中文全角标点", isOn: pref(\.chinesePunctuation))
-            Toggle("使用直角引号「」", isOn: pref(\.cornerQuotes)).disabled(!store.preferences.chinesePunctuation)
+            Toggle("自动调序", isOn: pref(\.automaticallyRanks))
+            Picker("调整范围", selection: pref(\.rankingRange)) {
+                Text("仅普通候选").tag(RankingRange.ordinary)
+                Text("包括单键字与键名汉字").tag(RankingRange.all)
+            }
+            Toggle("显示后续编码提示", isOn: pref(\.showContinuations))
+            Toggle("输入第五键时上屏首选", isOn: pref(\.fifthKeyCommits))
+            Toggle("Enter 上屏候选", isOn: pref(\.returnSelectsCandidate))
+            Toggle("逗号和句号翻页", isOn: pref(\.commaPaging))
+            Toggle("使用分号进入临时英文", isOn: pref(\.semicolonMode))
+            Toggle("启用 z 键功能", isOn: pref(\.zFunction))
+            Toggle("在光标旁提示中英及简繁切换", isOn: pref(\.modeHints))
             Toggle("输简出繁", isOn: pref(\.traditional))
-            DisclosureGroup("自定义标点") {
-                ForEach([",", ".", "?", "!", ";", ":", "(", ")", "[", "]", "<", ">"], id: \.self) { mark in
-                    HStack {
-                        Text(mark).font(.body.monospaced()).frame(width: 28)
-                        TextField("留空使用默认映射", text: Binding(
-                            get: { store.preferences.punctuationOverrides[mark] ?? "" },
-                            set: { value in
-                                store.update { $0.punctuationOverrides[mark] = value.isEmpty ? nil : String(value.prefix(8)) }
-                            }
-                        ))
-                    }
-                }
-            }.disabled(!store.preferences.chinesePunctuation)
         }
     }
 
@@ -295,11 +303,15 @@ struct LexiconSettings: View {
     @State private var busy = false
     @State private var remove: WordGroup?
     @State private var personalExpanded = false
+    @State private var editingPersonal = false
+    @State private var editorText = ""
+    @State private var editorError = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Button("导入词库…", action: open)
+                Button("编辑用户词库…") { openPersonalEditor() }
                 Text("SCEL、Rime YAML、TXT、TSV、CSV").font(.caption).foregroundStyle(.secondary)
             }.disabled(busy || store.loading)
             HStack {
@@ -311,6 +323,13 @@ struct LexiconSettings: View {
             }
             if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
             Divider()
+            Picker("86 五笔词库方案", selection: Binding(
+                get: { store.preferences.singleCharacters },
+                set: { value in store.update { $0.singleCharacters = value } }
+            )) {
+                Text("字与词组").tag(false)
+                Text("仅单字").tag(true)
+            }
             Text("已安装").font(.headline)
             if store.groups.isEmpty { Text("已启用内置 86 五笔码表。").foregroundStyle(.secondary).font(.callout) }
             ForEach(store.groups) { group in
@@ -356,12 +375,56 @@ struct LexiconSettings: View {
             }
             if !catalog.message.isEmpty { Text(catalog.message).font(.caption).foregroundStyle(.secondary) }
         }
-        .onAppear { if catalog.items.isEmpty { catalog.refresh() }; inferCode() }
+        .onAppear { catalog.refresh(automatic: true); inferCode() }
+        .sheet(isPresented: $editingPersonal) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("编辑用户词库").font(.title2.weight(.semibold))
+                Text("每行先输入 1 至 4 位五笔编码，再输入一个或多个词条，中间用空格或 Tab 分隔。")
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $editorText).font(.body.monospaced())
+                    .frame(minHeight: 230).border(.secondary.opacity(0.25))
+                    .accessibilityLabel("用户词库文本")
+                if !editorError.isEmpty { Text(editorError).foregroundStyle(.red) }
+                HStack {
+                    Spacer()
+                    Button("取消") { editingPersonal = false }.keyboardShortcut(.cancelAction)
+                    Button("保存") { savePersonalEditor() }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 505)
+        }
         .onChange(of: model.word) { _ in inferCode() }
         .alert("移除词库？", isPresented: Binding(get: { remove != nil }, set: { if !$0 { remove = nil } })) {
             Button("移除", role: .destructive) { if let remove { store.remove(remove) }; remove = nil }
             Button("取消", role: .cancel) { remove = nil }
         } message: { Text("移除后，其他启用了 iCloud 同步的 Mac 也会更新。") }
+    }
+
+    private func openPersonalEditor() {
+        let entries = store.groups.first(where: { $0.id == "personal" })?.entries ?? []
+        editorText = entries.map { "\($0.code)\t\($0.word)" }.joined(separator: "\n")
+        editorError = ""
+        editingPersonal = true
+    }
+
+    private func savePersonalEditor() {
+        guard editorText.utf8.count < 2 * 1024 * 1024 else {
+            editorError = "编辑内容不能超过 2 MB。"
+            return
+        }
+        var entries: [Entry] = []
+        for (index, line) in editorText.components(separatedBy: .newlines).enumerated() {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard let code = fields.first.map(String.init) else { continue }
+            if code.hasPrefix("#") { continue }
+            guard Entry.validCode(code), fields.count > 1, fields.dropFirst().allSatisfy({ $0.count <= 64 }) else {
+                editorError = "第 \(index + 1) 行格式有误，请检查编码与词条。"
+                return
+            }
+            entries += fields.dropFirst().map { Entry(String($0), code) }
+        }
+        store.replacePersonal(with: entries)
+        editingPersonal = false
+        message = "已保存用户词库。"
     }
 
     private func inferCode() {
