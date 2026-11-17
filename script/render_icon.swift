@@ -24,55 +24,40 @@ func line(_ x: CGFloat, _ y: CGFloat, _ toX: CGFloat, _ toY: CGFloat, width: CGF
 }
 
 func draw(_ template: Bool) {
-    let dark = color(0.070, 0.162, 0.143)
-    let mint = color(0.75, 0.94, 0.83)
-    let gold = color(0.91, 0.70, 0.40)
+    let ink = color(0.085, 0.082, 0.17)
+    let electric = color(0.77, 0.99, 0.57)
     if !template {
-        let tile = NSBezierPath(roundedRect: NSRect(x: 5, y: 5, width: 90, height: 90), xRadius: 23, yRadius: 23)
-        dark.setFill()
+        let tile = NSBezierPath(roundedRect: NSRect(x: 5, y: 5, width: 90, height: 90), xRadius: 22, yRadius: 22)
+        ink.setFill()
         tile.fill()
-        let edge = NSBezierPath(roundedRect: NSRect(x: 6, y: 6, width: 88, height: 88), xRadius: 22, yRadius: 22)
-        color(0.15, 0.29, 0.25).setStroke()
-        edge.lineWidth = 1.1
-        edge.stroke()
     }
 
     let gourd = NSBezierPath()
-    gourd.move(to: NSPoint(x: 50, y: 73))
-    curve(gourd, 64, 56, 60, 73, 67, 65)
-    curve(gourd, 67, 48, 62, 52, 63, 50)
-    curve(gourd, 72, 28, 73, 43, 76, 36)
-    curve(gourd, 50, 17, 69, 19, 60, 17)
-    curve(gourd, 28, 28, 40, 17, 31, 19)
-    curve(gourd, 33, 48, 24, 36, 27, 43)
-    curve(gourd, 36, 56, 37, 50, 38, 52)
-    curve(gourd, 50, 73, 33, 65, 40, 73)
+    gourd.move(to: NSPoint(x: 52, y: 79))
+    curve(gourd, 67, 60, 62, 79, 69, 70)
+    curve(gourd, 71, 51, 66, 55, 68, 53)
+    curve(gourd, 79, 33, 77, 46, 79, 40)
+    curve(gourd, 56, 16, 79, 21, 68, 16)
+    gourd.line(to: NSPoint(x: 44, y: 16))
+    curve(gourd, 21, 33, 32, 16, 21, 21)
+    curve(gourd, 29, 51, 21, 40, 23, 46)
+    curve(gourd, 33, 60, 32, 53, 34, 55)
+    curve(gourd, 48, 79, 31, 70, 38, 79)
     gourd.close()
-    let contour = template ? NSColor.black : mint
-    if !template {
-        color(0.101, 0.242, 0.199).setFill()
-        gourd.fill()
-    }
-    contour.setStroke()
-    gourd.lineWidth = template ? 5.2 : 2.8
-    gourd.stroke()
-    line(50, 74, 54, 82, width: template ? 5 : 2.6, ink: contour)
-    if !template {
-        let leaf = NSBezierPath()
-        leaf.move(to: NSPoint(x: 54, y: 80))
-        curve(leaf, 67, 84, 57, 87, 63, 87)
-        curve(leaf, 54, 80, 65, 79, 59, 77)
-        leaf.close()
-        gold.setFill()
-        leaf.fill()
-    }
+    (template ? NSColor.black : electric).setFill()
+    gourd.fill()
 
-    let weight: CGFloat = template ? 3.7 : 2.9
-    line(41, 43, 59, 43, width: weight, ink: contour)
-    line(48, 42, 46, 28, width: weight, ink: contour)
-    line(41, 37, 56, 37, width: weight, ink: contour)
-    line(56, 37, 55, 28, width: weight, ink: contour)
-    line(37, 28, 63, 28, width: weight, ink: contour)
+    let context = NSGraphicsContext.current?.cgContext
+    context?.saveGState()
+    if template { context?.setBlendMode(.clear) }
+    let cut = template ? NSColor.black : ink
+    let weight: CGFloat = template ? 5 : 4.4
+    line(37, 47, 63, 47, width: weight, ink: cut)
+    line(48, 47, 44, 26, width: weight, ink: cut)
+    line(39, 38, 61, 38, width: weight, ink: cut)
+    line(61, 38, 59, 26, width: weight, ink: cut)
+    line(33, 26, 67, 26, width: weight, ink: cut)
+    context?.restoreGState()
 }
 
 func render(size: Int, template: Bool = false) throws -> Data {
@@ -83,9 +68,9 @@ func render(size: Int, template: Bool = false) throws -> Data {
     }
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
-    let scale = CGFloat(size) / (template ? 77 : 100)
+    let scale = CGFloat(size) / (template ? 72 : 100)
     context.cgContext.scaleBy(x: scale, y: scale)
-    if template { context.cgContext.translateBy(x: -11.5, y: -10.5) }
+    if template { context.cgContext.translateBy(x: -14, y: -11) }
     draw(template)
     NSGraphicsContext.restoreGraphicsState()
     guard let png = pixels.representation(using: .png, properties: [:]) else {
@@ -95,7 +80,8 @@ func render(size: Int, template: Bool = false) throws -> Data {
 }
 
 try render(size: 512).write(to: output.appendingPathComponent("BrandIcon.png"))
-try render(size: 36, template: true).write(to: output.appendingPathComponent("InputIcon.png"))
+try render(size: 18, template: true).write(to: output.appendingPathComponent("InputIcon.png"))
+try render(size: 36, template: true).write(to: output.appendingPathComponent("InputIcon@2x.png"))
 for point in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
         let suffix = scale == 2 ? "@2x" : ""

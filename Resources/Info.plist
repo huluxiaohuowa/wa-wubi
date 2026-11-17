@@ -19,13 +19,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.2</string>
+	<string>0.1.3</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>MacOSX</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
 	<key>ComponentInputModeDict</key>
 	<dict>
 		<key>tsInputModeListKey</key>
@@ -34,6 +34,8 @@
 			<dict>
 				<key>CFBundleName</key>
 				<string>WA 五笔</string>
+				<key>TISIconIsTemplate</key>
+				<true/>
 				<key>TISIconLabels</key>
 				<dict>
 					<key>Primary</key>

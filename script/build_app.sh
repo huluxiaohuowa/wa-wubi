@@ -12,7 +12,7 @@ if [[ -n "${WAWUBI_VERSION:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $WAWUBI_VERSION" "$app/Contents/Info.plist"
 fi
 cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Resources/"
-cp Resources/{InputIcon.png,BrandIcon.png,AppIcon.icns} "$app/Contents/Resources/"
+cp Resources/{InputIcon.png,InputIcon@2x.png,BrandIcon.png,AppIcon.icns} "$app/Contents/Resources/"
 cp -R Resources/zh-Hans.lproj Resources/en.lproj "$app/Contents/Resources/"
 if [[ -n "${WAWUBI_SIGN_IDENTITY:-}" ]]; then
     codesign --force --sign "$WAWUBI_SIGN_IDENTITY" --options runtime --timestamp \
