@@ -83,23 +83,23 @@ enum InstallPayload {
 
         cleanup() {
             if [[ -e "$backup" && ! -e "$target" ]]; then
-                /bin/mv "$backup" "$target"
+                /bin/mv "$backup" "$target" || return
             fi
             /bin/rm -rf "$stage"
         }
         trap cleanup EXIT
 
-        [[ -d "$1" && ! -L "$1" && ! -L "$target" ]]
-        /usr/bin/ditto "$1" "$payload"
-        /usr/bin/codesign --verify --strict --deep --all-architectures -R "$3" "$payload"
+        [[ -d "$1" && ! -L "$1" && ! -L "$target" ]] || exit 1
+        /usr/bin/ditto "$1" "$payload" || exit 1
+        /usr/bin/codesign --verify --strict --deep --all-architectures -R "=$3" "$payload" || exit 1
         version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$payload/Contents/Info.plist")"
-        [[ "$version" == "$2" ]]
+        [[ "$version" == "$2" ]] || exit 1
         /usr/sbin/chown -R -P root:wheel "$payload"
         /bin/chmod -R a+rX,go-w "$payload"
 
         if [[ -e "$target" ]]; then
             bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$target/Contents/Info.plist")"
-            [[ "$bundle" == top.fuluwa.inputmethod.Wubi86 ]]
+            [[ "$bundle" == top.fuluwa.inputmethod.Wubi86 ]] || exit 1
             /bin/mv "$target" "$backup"
         fi
         /bin/mv "$payload" "$target"
