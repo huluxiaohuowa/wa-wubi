@@ -208,11 +208,14 @@ struct SettingsView: View {
             Toggle("自动调序", isOn: pref(\.automaticallyRanks))
             Picker("调整范围", selection: pref(\.rankingRange)) {
                 Text("仅普通候选").tag(RankingRange.ordinary)
-                Text("包括单键字与键名汉字").tag(RankingRange.all)
+                Text("包括一级简码与键名汉字").tag(RankingRange.all)
             }
             Toggle("显示后续编码提示", isOn: pref(\.showContinuations))
             Toggle("输入第五键时上屏首选", isOn: pref(\.fifthKeyCommits))
-            Toggle("Enter 上屏候选", isOn: pref(\.returnSelectsCandidate))
+            Picker("Enter 键", selection: pref(\.returnSelectsCandidate)) {
+                Text("上屏英文编码").tag(false)
+                Text("上屏候选").tag(true)
+            }
             Toggle("逗号和句号翻页", isOn: pref(\.commaPaging))
             Toggle("使用分号进入临时英文", isOn: pref(\.semicolonMode))
             Toggle("启用 z 键功能", isOn: pref(\.zFunction))
