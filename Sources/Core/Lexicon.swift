@@ -106,12 +106,13 @@ public final class Lexicon: @unchecked Sendable {
     }
 
     public func exact(_ code: String, extra: [Entry] = [], edits: [String: WordEdit] = [:],
-                      includeContinuations: Bool = true) -> [Candidate] {
+                      includeContinuations: Bool = true,
+                      canDisplay: (String) -> Bool = { _ in true }) -> [Candidate] {
         let base = table[code, default: []]
         let preferred = edits.values.filter { $0.pinned && !$0.hidden }.sorted { $0.word < $1.word }
         var seen = Set<String>()
         var words = (preferred.map(\.word) + base.map(\.word) + extra.map(\.word)).filter {
-            edits[$0]?.hidden != true && seen.insert($0).inserted
+            edits[$0]?.hidden != true && seen.insert($0).inserted && canDisplay($0)
         }
         let root = code.first.flatMap { Self.roots[$0] }
         if let root, let first = code.first, code.count == 4, code.allSatisfy({ $0 == first }) {
@@ -126,7 +127,7 @@ public final class Lexicon: @unchecked Sendable {
         if includeContinuations || (shortRoot != nil && candidates.isEmpty) {
             var exactWords = Set(words)
             if let shortRoot { exactWords.insert(shortRoot) }
-            let hints = continuationCandidates(for: code, excluding: exactWords, edits: edits)
+            let hints = continuationCandidates(for: code, excluding: exactWords, edits: edits, canDisplay: canDisplay)
             if includeContinuations {
                 candidates += hints
             } else if let first = hints.first {
@@ -142,7 +143,7 @@ public final class Lexicon: @unchecked Sendable {
     }
 
     private func continuationCandidates(for prefix: String, excluding: Set<String>,
-                                        edits: [String: WordEdit]) -> [Candidate] {
+                                        edits: [String: WordEdit], canDisplay: (String) -> Bool) -> [Candidate] {
         guard (1...3).contains(prefix.count) else { return [] }
         var lower = 0
         var upper = sortedCodes.count
@@ -158,7 +159,7 @@ public final class Lexicon: @unchecked Sendable {
             let suffix = String(code.dropFirst(prefix.count))
             var seen = Set<String>()
             for entry in table[code, default: []] where !excluding.contains(entry.word) &&
-              edits[entry.word]?.hidden != true && seen.insert(entry.word).inserted {
+              edits[entry.word]?.hidden != true && seen.insert(entry.word).inserted && canDisplay(entry.word) {
                 results.append(Candidate(entry.word, hint: suffix))
                 if results.count == 72 { return results }
             }

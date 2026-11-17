@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import CoreServices
 import SwiftUI
 
 final class InstallWindow: ObservableObject {
@@ -59,9 +60,11 @@ final class InstallWindow: ObservableObject {
             }
         }
     }
+
     func enableSource(at destination: URL = InstallPayload.folder.appendingPathComponent(InstallPayload.name)) {
+        _ = LSRegisterURL(destination as CFURL, true)
         guard TISRegisterInputSource(destination as CFURL) == noErr else {
-            registrationMessage = "macOS 尚未注册 WA 五笔。请重新打开键盘设置，或在下次登录后添加。"
+            registrationMessage = "安装文件已就位，但 macOS 尚未注册输入源。首次安装时，可保存工作后重新登录再添加。"
             return
         }
         findAndEnable(remainingAttempts: 8)
@@ -69,34 +72,24 @@ final class InstallWindow: ObservableObject {
 
     private func findAndEnable(remainingAttempts: Int) {
         let query = [kTISPropertyInputSourceID as String: InstallPayload.mode] as CFDictionary
-        let modes = TISCreateInputSourceList(query, true)?.takeRetainedValue() as? [TISInputSource]
-        if let mode = modes?.first, TISEnableInputSource(mode) == noErr {
-            sourceEnabled = Self.isAvailableInMenu()
-            if sourceEnabled {
-                registrationMessage = "可在菜单栏的输入菜单切换到 WA 五笔。"
-                return
-            }
+        if let mode = (TISCreateInputSourceList(query, true)?.takeRetainedValue() as? [TISInputSource])?.first {
+            _ = TISEnableInputSource(mode)
         }
-        if remainingAttempts > 0 {
+        let enabled = TISCreateInputSourceList(query, false)?.takeRetainedValue() as? [TISInputSource] ?? []
+        sourceEnabled = enabled.contains { source in
+            guard let value = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable) else { return false }
+            return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
+        }
+        if sourceEnabled {
+            registrationMessage = "macOS 已将 WA 五笔列为可选输入源。请在菜单栏尝试切换。"
+        } else if remainingAttempts > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 self?.findAndEnable(remainingAttempts: remainingAttempts - 1)
             }
         } else {
-            registrationMessage = "系统已安装，但当前账号的输入菜单尚未刷新。请重新打开键盘设置添加 WA 五笔，或在下次登录后添加。"
+            registrationMessage = "已安装，但当前会话未能启用。首次安装时，可保存工作后重新登录，再在「简体中文」下添加 WA 五笔。"
         }
     }
-
-    private static func isAvailableInMenu() -> Bool {
-        // The mode can report itself as enabled before the account's input menu persists it.
-        guard let sources = UserDefaults.standard.persistentDomain(forName: "com.apple.HIToolbox")?["AppleEnabledInputSources"]
-            as? [[String: Any]] else { return false }
-        return sources.contains {
-            $0["Bundle ID"] as? String == InstallPayload.identifier &&
-                ($0["Input Mode"] as? String == InstallPayload.mode ||
-                 $0["InputSourceKind"] as? String == "Keyboard Input Method Without Modes")
-        }
-    }
-
 }
 
 private struct InstallerView: View {
