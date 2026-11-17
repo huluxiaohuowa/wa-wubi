@@ -70,7 +70,7 @@ enum SpeechError: LocalizedError {
 }
 
 enum SpeechKeychain {
-    static let service = "top.fuluwa.inputmethod.WAWubi.asr"
+    static let service = "top.fuluwa.inputmethod.Wubi86.asr"
 
     static func key(for provider: SpeechProvider) -> String {
         var query = selector(provider)

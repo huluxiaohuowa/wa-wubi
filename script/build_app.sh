@@ -37,6 +37,7 @@ if [[ -n "${WAWUBI_VERSION:-}" ]]; then
 fi
 cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Resources/"
 cp Resources/InputIcon.png "$app/Contents/Resources/"
+cp -R Resources/zh-Hans.lproj Resources/en.lproj "$app/Contents/Resources/"
 if [[ -n "${WAWUBI_SIGN_IDENTITY:-}" ]]; then
     codesign --force --sign "$WAWUBI_SIGN_IDENTITY" --options runtime --timestamp \
         --entitlements Resources/Release.entitlements "$app" >&2

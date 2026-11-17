@@ -1,7 +1,7 @@
 import Carbon
 import Foundation
 
-let id = "top.fuluwa.inputmethod.WAWubi.Hans"
+let id = "top.fuluwa.inputmethod.Wubi86.Hans"
 let app = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Input Methods/WA 五笔.app", isDirectory: true)
 let status = TISRegisterInputSource(app as CFURL)

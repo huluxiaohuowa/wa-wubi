@@ -9,26 +9,26 @@
 	<key>CFBundleExecutable</key>
 	<string>WAWubi</string>
 	<key>CFBundleIdentifier</key>
-	<string>top.fuluwa.inputmethod.WAWubi</string>
+	<string>top.fuluwa.inputmethod.Wubi86</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>WAWubi</string>
+	<string>WA 五笔</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.1.1</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>MacOSX</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>ComponentInputModeDict</key>
 	<dict>
 		<key>tsInputModeListKey</key>
 		<dict>
-			<key>top.fuluwa.inputmethod.WAWubi.Hans</key>
+			<key>top.fuluwa.inputmethod.Wubi86.Hans</key>
 			<dict>
 				<key>CFBundleName</key>
 				<string>WA 五笔</string>
@@ -38,7 +38,7 @@
 					<string>五</string>
 				</dict>
 				<key>TISInputSourceID</key>
-				<string>top.fuluwa.inputmethod.WAWubi.Hans</string>
+				<string>top.fuluwa.inputmethod.Wubi86.Hans</string>
 				<key>TISIntendedLanguage</key>
 				<string>zh-Hans</string>
 				<key>tsInputModeCharacterRepertoireKey</key>
@@ -62,7 +62,7 @@
 		</dict>
 		<key>tsVisibleInputModeOrderedArrayKey</key>
 		<array>
-			<string>top.fuluwa.inputmethod.WAWubi.Hans</string>
+			<string>top.fuluwa.inputmethod.Wubi86.Hans</string>
 		</array>
 	</dict>
 	<key>InputMethodConnectionName</key>
@@ -90,7 +90,7 @@
 	<key>TISIconIsTemplate</key>
 	<true/>
 	<key>TISInputSourceID</key>
-	<string>top.fuluwa.inputmethod.WAWubi</string>
+	<string>top.fuluwa.inputmethod.Wubi86</string>
 	<key>TISIntendedLanguage</key>
 	<string>zh-Hans</string>
 	<key>tsInputMethodCharacterRepertoireKey</key>

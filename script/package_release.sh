@@ -5,7 +5,7 @@ build="${WAWUBI_BUILD_DIR:-$HOME/dev/build/wa-wubi/release}"
 export WAWUBI_BUILD_DIR="$build"
 export WAWUBI_CONFIGURATION=release
 export WAWUBI_UNIVERSAL=1
-export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.0}"
+export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.1}"
 : "${WAWUBI_SIGN_IDENTITY:?Developer ID Application signing identity required}"
 : "${WAWUBI_NOTARY_KEY_FILE:?Notary API private key file required}"
 : "${WAWUBI_NOTARY_KEY_ID:?Notary API key ID required}"
@@ -33,7 +33,6 @@ xcrun stapler validate "$app" >&2
 stage="$(mktemp -d "$build/tmp/disk.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 ditto "$app" "$stage/WA 五笔.app"
-ln -s '/Library/Input Methods' "$stage/拖到这里安装"
 cp "$root/Resources/安装说明.txt" "$stage/"
 dmg="$build/WA-Wubi-$WAWUBI_VERSION.dmg"
 hdiutil create -ov -volname "WA 五笔" -srcfolder "$stage" -format UDZO "$dmg" >&2
