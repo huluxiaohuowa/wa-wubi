@@ -7,6 +7,7 @@ import WubiCore
 final class InputController: IMKInputController {
     private static weak var activeController: InputController?
     private static var english = false
+    private static var showingSpeechPermission = false
     private let store = LibraryStore.shared
     private let speech = SpeechCapture()
     private var state = Composition()
@@ -174,10 +175,16 @@ final class InputController: IMKInputController {
             self.statusText = text
             self.draw(target)
         } completed: { [weak self] result in
-            guard let self, Self.activeController === self,
+            guard let self, Self.activeController === self else { return }
+            if case .failure(let error) = result, let pane = (error as? SpeechError)?.privacyPane {
+                self.stopSpeech()
+                Self.showSpeechPermission(name: pane.name, anchor: pane.anchor)
+                return
+            }
+            guard
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
                   target.selectedRange() == selection, self.caret(target) == origin else {
-                self?.stopSpeech()
+                self.stopSpeech()
                 return
             }
             self.speaking = false
@@ -188,6 +195,23 @@ final class InputController: IMKInputController {
                 self.draw(target)
             case .failure(let error): self.notify(error.localizedDescription, at: target)
             }
+        }
+    }
+
+    private static func showSpeechPermission(name: String, anchor: String) {
+        guard !showingSpeechPermission else { return }
+        showingSpeechPermission = true
+        defer { showingSpeechPermission = false }
+        let alert = NSAlert()
+        alert.messageText = "WA 五笔需要\(name)权限"
+        alert.informativeText = "请在「系统设置 → 隐私与安全性 → \(name)」中允许 WA 五笔，然后再次按住语音快捷键。"
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let privacy = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"
+        if !NSWorkspace.shared.open(URL(string: "\(privacy)?\(anchor)")!) {
+            NSWorkspace.shared.open(URL(string: privacy)!)
         }
     }
 

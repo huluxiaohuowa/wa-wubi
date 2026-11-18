@@ -134,6 +134,14 @@ enum SpeechError: LocalizedError {
         case .timeout: return "语音识别超时。"
         }
     }
+
+    var privacyPane: (name: String, anchor: String)? {
+        switch self {
+        case .microphone: return ("麦克风", "Privacy_Microphone")
+        case .permission: return ("语音识别", "Privacy_SpeechRecognition")
+        default: return nil
+        }
+    }
 }
 
 enum SpeechKeychain {
@@ -185,7 +193,6 @@ final class SpeechCapture {
     private var recorder: AVAudioRecorder?
     private var recognition: SFSpeechRecognitionTask?
     private var network: URLSessionDataTask?
-    private var pending: DispatchWorkItem?
     private var timeout: DispatchWorkItem?
     private var file: URL?
     private var session = UUID()
@@ -200,15 +207,10 @@ final class SpeechCapture {
         self.configuration = configuration
         self.didFinish = completed
         self.phase = phase
-        let id = session
-        let delay = DispatchWorkItem { [weak self] in self?.authorize(id) }
-        pending = delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: delay)
+        authorize(session)
     }
 
     func release() {
-        pending?.cancel()
-        pending = nil
         guard let recorder, let file else { cancel(); return }
         let duration = recorder.currentTime
         timeout?.cancel()
@@ -226,8 +228,6 @@ final class SpeechCapture {
 
     func cancel() {
         session = UUID()
-        pending?.cancel()
-        pending = nil
         timeout?.cancel()
         timeout = nil
         recorder?.stop()
