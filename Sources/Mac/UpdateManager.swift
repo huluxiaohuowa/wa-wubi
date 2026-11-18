@@ -8,12 +8,8 @@ import WubiCore
 final class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
     static let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-    @Published var automatic = UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(automatic, forKey: "autoCheckUpdates") }
-    }
-    @Published var automaticallyInstalls = UserDefaults.standard.bool(forKey: "automaticallyInstallUpdates") {
-        didSet { UserDefaults.standard.set(automaticallyInstalls, forKey: "automaticallyInstallUpdates") }
-    }
+    private var automatic: Bool { LibraryStore.shared.preferences.autoCheckUpdates ?? true }
+    private var automaticallyInstalls: Bool { LibraryStore.shared.preferences.automaticallyInstallUpdates ?? false }
     @Published private(set) var available: WubiUpdate?
     @Published private(set) var busy = false
     @Published private(set) var message = ""
@@ -195,13 +191,20 @@ final class UpdateManager: ObservableObject {
 
 struct UpdateSettings: View {
     @ObservedObject var manager: UpdateManager
+    @ObservedObject private var store = LibraryStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("已安装 \(UpdateManager.current)").foregroundStyle(.secondary)
-            Toggle("自动检查更新", isOn: $manager.automatic)
-            Toggle("自动下载并安装", isOn: $manager.automaticallyInstalls)
-                .disabled(!manager.automatic)
+            Toggle("自动检查更新", isOn: Binding(
+                get: { store.preferences.autoCheckUpdates ?? true },
+                set: { value in store.update { $0.autoCheckUpdates = value } }
+            ))
+            Toggle("自动下载并安装", isOn: Binding(
+                get: { store.preferences.automaticallyInstallUpdates ?? false },
+                set: { value in store.update { $0.automaticallyInstallUpdates = value } }
+            ))
+            .disabled(store.preferences.autoCheckUpdates == false)
             HStack {
                 Button("检查更新", action: manager.check).disabled(manager.busy)
                 if manager.available != nil {

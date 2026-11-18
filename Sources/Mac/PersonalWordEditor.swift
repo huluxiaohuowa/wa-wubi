@@ -11,13 +11,20 @@ struct PersonalWordEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedWord: UUID?
     @State private var rows: [Row]
+    @State private var learnsPhrases: Bool
     @State private var error = ""
     private let lexicon: Lexicon
-    private let save: ([Entry]) -> Void
+    private let initialLearning: Bool
+    private let singleCharacters: Bool
+    private let save: ([Entry], Bool?) -> Void
 
-    init(entries: [Entry], lexicon: Lexicon, save: @escaping ([Entry]) -> Void) {
+    init(entries: [Entry], lexicon: Lexicon, learnsPhrases: Bool, singleCharacters: Bool,
+         save: @escaping ([Entry], Bool?) -> Void) {
         self.lexicon = lexicon
         self.save = save
+        initialLearning = learnsPhrases
+        self.singleCharacters = singleCharacters
+        _learnsPhrases = State(initialValue: learnsPhrases)
         let rows = entries.map { item in
             Row(word: item.word, manualCode: lexicon.fullCode(for: item.word) == item.code ? nil : item.code)
         }
@@ -29,6 +36,7 @@ struct PersonalWordEditor: View {
             Text("编辑用户词库").font(.title2.weight(.semibold))
             Text("输入词条后会自动填入编码。需要时可在右栏手动修改。")
                 .foregroundStyle(.secondary)
+            PhraseLearningToggle(isOn: $learnsPhrases).disabled(singleCharacters)
             HStack(spacing: 12) {
                 Text("词条").frame(maxWidth: .infinity, alignment: .leading)
                 Text("五笔编码").frame(width: 120, alignment: .leading)
@@ -104,7 +112,16 @@ struct PersonalWordEditor: View {
             }
             entries.append(Entry(word, code))
         }
-        save(entries)
+        save(entries, learnsPhrases == initialLearning ? nil : learnsPhrases)
         dismiss()
+    }
+}
+
+struct PhraseLearningToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle("从拆字输入自动加词", isOn: $isOn)
+            .help("删掉未选中的四码后连续选字，若组合出的五笔编码相同，自动加入用户词库。")
     }
 }

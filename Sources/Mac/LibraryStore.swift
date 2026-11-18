@@ -23,8 +23,16 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var syncing = false
     @Published private(set) var cloudFolder: URL?
     @Published private(set) var pinyinReady = false
-    @Published var speech = SpeechConfiguration.load() {
-        didSet { speech.save() }
+    var speech: SpeechConfiguration {
+        get {
+            guard let data = preferences.speechConfiguration,
+                  let value = try? JSONDecoder().decode(SpeechConfiguration.self, from: data) else { return .init() }
+            return value
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            update { $0.speechConfiguration = data }
+        }
     }
     private(set) var lexicon = Lexicon([])
     private var pinyin: [String: [Candidate]] = [:]
@@ -59,6 +67,7 @@ final class LibraryStore: ObservableObject {
         if let path = defaults.string(forKey: "syncPath") { cloudFolder = URL(fileURLWithPath: path, isDirectory: true) }
         cloudIdentity = defaults.data(forKey: "syncIdentity")
         reload()
+        migrateLocalPreferences(defaults)
         DispatchQueue.global(qos: .userInitiated).async {
             let url = Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml")
             let text = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
@@ -72,6 +81,28 @@ final class LibraryStore: ObservableObject {
         }
         timer = Timer.scheduledTimer(withTimeInterval: 40, repeats: true) { [weak self] _ in self?.sync() }
         if preferences.cloud { DispatchQueue.main.async { self.sync() } }
+    }
+
+    private func migrateLocalPreferences(_ defaults: UserDefaults) {
+        let marker = "migratedSyncableSettings"
+        guard !defaults.bool(forKey: marker) else { return }
+        var migrated = preferences
+        if migrated.speechConfiguration == nil,
+           let data = defaults.data(forKey: "speechConfiguration"),
+           (try? JSONDecoder().decode(SpeechConfiguration.self, from: data)) != nil {
+            migrated.speechConfiguration = data
+        }
+        migrated.autoCheckUpdates = migrated.autoCheckUpdates ?? defaults.object(forKey: "autoCheckUpdates") as? Bool
+        migrated.automaticallyInstallUpdates = migrated.automaticallyInstallUpdates ??
+            defaults.object(forKey: "automaticallyInstallUpdates") as? Bool
+        do {
+            if migrated != preferences {
+                try snapshot.updatePreferences(from: preferences, to: migrated, device: device)
+                try save(snapshot, to: local)
+                preferences = migrated
+            }
+            defaults.set(true, forKey: marker)
+        } catch { status = "无法迁移旧版偏好设置。" }
     }
 
     func preparePinyin(completion: (() -> Void)? = nil) {
@@ -172,6 +203,16 @@ final class LibraryStore: ObservableObject {
         edit(code, word, pinned: true)
     }
 
+    func addLearnedPhrase(_ entry: Entry) {
+        let key = "personal/\(entry.code)/\(entry.word)"
+        guard preferredImportCodes[entry.word] == nil, lexicon.existingCode(for: entry.word) == nil,
+              snapshot.values[key] == nil, edits[entry.code]?[entry.word]?.hidden != true else { return }
+        set(key, entry)
+        reload()
+        persist()
+        sync()
+    }
+
     func remove(_ entry: Entry) {
         snapshot.set("personal/\(entry.code)/\(entry.word)", to: nil, device: device)
         snapshot.set("edit/\(entry.code)/\(entry.word)", to: nil, device: device)
@@ -243,7 +284,7 @@ final class LibraryStore: ObservableObject {
             preferences = decoded
         }
         personal.sort { $0.code == $1.code ? $0.word < $1.word : $0.code < $1.code }
-        if !personal.isEmpty { nextGroups.append(WordGroup(id: "personal", name: "手动加词", entries: personal)) }
+        if !personal.isEmpty { nextGroups.append(WordGroup(id: "personal", name: "用户词库", entries: personal)) }
         groups = nextGroups.sorted {
             if $0.id == "personal" || $1.id == "personal" { return $0.id == "personal" }
             return $0.id < $1.id

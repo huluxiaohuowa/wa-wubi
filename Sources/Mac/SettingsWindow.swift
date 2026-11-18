@@ -268,7 +268,8 @@ private struct CloudSettings: View {
             }
             if let folder = store.cloudFolder { Text(folder.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
             if !store.status.isEmpty { Text(store.status).font(.callout).foregroundStyle(.secondary) }
-            Text("语音服务及其密钥在每台 Mac 上单独设置。").font(.caption).foregroundStyle(.secondary)
+            Text("语音和更新偏好参与同步。语音服务密钥及系统授权由每台 Mac 单独管理。")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .sheet(isPresented: $enable) {
             VStack(alignment: .leading, spacing: 16) {
@@ -343,6 +344,11 @@ struct LexiconSettings: View {
                 if model.deleteWord { Button("取消") { model.deleteWord = false } }
             }
             if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
+            PhraseLearningToggle(isOn: Binding(
+                get: { store.preferences.learnsPhrases ?? false },
+                set: { value in store.update { $0.learnsPhrases = value } }
+            ))
+            .disabled(store.preferences.singleCharacters)
             Divider()
             Picker("86 五笔词库方案", selection: Binding(
                 get: { store.preferences.singleCharacters },
@@ -381,8 +387,10 @@ struct LexiconSettings: View {
         .onChange(of: model.requestID) { _ in manualCode = nil }
         .sheet(isPresented: $editingPersonal) {
             PersonalWordEditor(entries: store.groups.first { $0.id == "personal" }?.entries ?? [],
-                               lexicon: store.lexicon) { entries in
+                               lexicon: store.lexicon, learnsPhrases: store.preferences.learnsPhrases ?? false,
+                               singleCharacters: store.preferences.singleCharacters) { entries, learning in
                 store.replacePersonal(with: entries)
+                if let learning { store.update { $0.learnsPhrases = learning } }
                 message = "已保存用户词库。"
             }
         }
@@ -473,7 +481,15 @@ struct SpeechSettings: View {
             }
             Text("按住 \(store.speech.shortcut.label) 直到出现「正在聆听」，松手后自动转写上屏。")
                 .foregroundStyle(.secondary)
-            Picker("识别服务", selection: $store.speech.provider) {
+            Picker("识别服务", selection: Binding(
+                get: { store.speech.provider },
+                set: { provider in
+                    var speech = store.speech
+                    speech.provider = provider
+                    speech.model = provider.defaultModel
+                    store.speech = speech
+                }
+            )) {
                 ForEach(SpeechProvider.allCases) { provider in Text(provider.label).tag(provider) }
             }
             if store.speech.provider == .apple {
@@ -508,10 +524,7 @@ struct SpeechSettings: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
             stopRecordingShortcut()
         }
-        .onChange(of: store.speech.provider) { _ in
-            store.speech.model = store.speech.provider.defaultModel
-            loadDefaults()
-        }
+        .onChange(of: store.speech.provider) { _ in loadDefaults() }
     }
 
     private func recordShortcut() {
@@ -559,7 +572,6 @@ struct SpeechSettings: View {
     }
 
     private func loadDefaults() {
-        if store.speech.model.isEmpty { store.speech.model = store.speech.provider.defaultModel }
         key = ""
         message = SpeechKeychain.key(for: store.speech.provider).isEmpty ? "" : "此服务的密钥已保存在本机。"
     }

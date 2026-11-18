@@ -11,6 +11,7 @@ final class InputController: IMKInputController {
     private let store = LibraryStore.shared
     private let speech = SpeechCapture()
     private var state = Composition()
+    private var phraseLearning = PhraseLearning()
     private var shiftPressed = false
     private var pinyinRefreshPending = false
     private var boundLanguage = false
@@ -31,6 +32,7 @@ final class InputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         Self.activeController = self
+        phraseLearning.reset()
         let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         consumedKeyDowns.removeAll()
@@ -49,6 +51,7 @@ final class InputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         stopSpeech()
+        phraseLearning.reset()
         shiftPressed = false
         if let target = sender as? IMKTextInput {
             if state.active { apply(state.accept(index: state.selected), to: target) }
@@ -65,6 +68,7 @@ final class InputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
+        phraseLearning.reset()
         guard let target = sender as? IMKTextInput, state.active else { return }
         apply(state.accept(index: state.selected), to: target)
         setCompositionMark(false, in: target)
@@ -76,6 +80,7 @@ final class InputController: IMKInputController {
         if let active = Self.activeController, active !== self { return false }
         if Self.activeController == nil { Self.activeController = self }
         if IsSecureEventInputEnabled() {
+            phraseLearning.reset()
             if state.active { state.reset() }
             setCompositionMark(false, in: target)
             consumedKeyDowns.removeAll()
@@ -100,16 +105,19 @@ final class InputController: IMKInputController {
     private func handleKeyDown(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         shiftPressed = false
         if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
+        if !flags.intersection([.control, .option, .command, .function]).isEmpty { phraseLearning.reset() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
         if !state.english, store.preferences.inputScheme != .wubi || (event.keyCode == 50 && !state.active) {
             warmPinyin()
         }
         guard let key = key(for: event) else {
+            phraseLearning.reset()
             if state.active { apply(state.accept(index: state.selected), to: target); draw(target) }
             return false
         }
         if store.loading && !state.english { return false }
+        let previous = store.preferences.learnsPhrases == true && !store.preferences.singleCharacters ? state : nil
         let result: Composition.Result
         if store.preferences.zFunction, state.code == "z", key == .space, !state.last.isEmpty {
             let word = state.last
@@ -119,6 +127,8 @@ final class InputController: IMKInputController {
             result = state.handle(key, preferences: store.preferences, lookup: lookup)
         }
         apply(result, to: target)
+        if let previous { phraseLearning.handle(key, from: previous, to: state) }
+        recordLearnedPhrase(result)
         draw(target)
         return result.handled
     }
@@ -133,6 +143,14 @@ final class InputController: IMKInputController {
             self.state.refresh(self.lookup)
             self.draw(target)
         }
+    }
+
+    private func recordLearnedPhrase(_ result: Composition.Result) {
+        guard store.preferences.learnsPhrases == true, !store.preferences.singleCharacters else {
+            phraseLearning.reset()
+            return
+        }
+        if let entry = phraseLearning.record(result, lexicon: store.lexicon) { store.addLearnedPhrase(entry) }
     }
 
     private func handleSpeechShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
@@ -178,6 +196,7 @@ final class InputController: IMKInputController {
         if flags == [.shift] { shiftPressed = true; return false }
         defer { shiftPressed = false }
         if flags.isEmpty && shiftPressed {
+            phraseLearning.reset()
             apply(state.shiftToggleEnglish(selectsCandidate: store.preferences.shiftSelectsCandidate ?? true), to: target)
             if !boundLanguage { Self.english = state.english }
             if store.preferences.modeHints { notify(state.english ? "A · 英文" : "五 · 中文", at: target) }
@@ -187,6 +206,7 @@ final class InputController: IMKInputController {
     }
 
     private func startSpeech(_ target: IMKTextInput) {
+        phraseLearning.reset()
         if state.active { apply(state.accept(index: state.selected), to: target) }
         speaking = true
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -399,7 +419,9 @@ final class InputController: IMKInputController {
                                   page: state.page, pages: state.pageCount, preferences: store.preferences,
                                   choose: { [weak self] index in
             guard let self, Self.activeController === self else { return }
-            self.apply(self.state.accept(index: index, fallback: false), to: target)
+            let result = self.state.accept(index: index, fallback: false)
+            self.apply(result, to: target)
+            self.recordLearnedPhrase(result)
             self.draw(target)
         }, pin: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: false) } : nil,
            hide: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: true) } : nil,

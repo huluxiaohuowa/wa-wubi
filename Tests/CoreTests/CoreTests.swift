@@ -197,6 +197,58 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(cleared.value)
     }
 
+    func testLearnsPhraseOnlyAfterAbandoningMatchingCode() {
+        let dictionary = Lexicon([Entry("微", "tmgt"), Entry("信", "wy"), Entry("信", "wyg"), Entry("心", "ny")])
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in dictionary.exact(code) }
+        var composition = Composition()
+        var learning = PhraseLearning()
+        let prefs = Preferences()
+        let now = Date()
+        func key(_ value: Composition.Key) -> Entry? {
+            let previous = composition
+            let result = composition.handle(value, preferences: prefs, lookup: lookup)
+            learning.handle(value, from: previous, to: composition, now: now)
+            return learning.record(result, lexicon: dictionary, now: now)
+        }
+        func type(_ value: String) {
+            for character in value { XCTAssertNil(key(.letter(character))) }
+        }
+        type("tmgt")
+        XCTAssertNil(key(.space))
+        type("wy")
+        XCTAssertNil(key(.space))
+        type("tmwy")
+        for _ in 0..<4 { XCTAssertNil(key(.backspace)) }
+        type("tmgt")
+        XCTAssertNil(key(.space))
+        type("wy")
+        XCTAssertEqual(key(.space), Entry("微信", "tmwy"))
+        type("tmwy")
+        XCTAssertNil(key(.escape))
+        type("tmgt")
+        XCTAssertNil(key(.space))
+        type("ny")
+        XCTAssertNil(key(.space))
+    }
+
+    func testNewSettingsMergeWithOtherDevicePreferences() throws {
+        let defaults = Preferences()
+        var settings = defaults
+        settings.learnsPhrases = true
+        settings.speechConfiguration = Data("fixture".utf8)
+        settings.autoCheckUpdates = false
+        settings.automaticallyInstallUpdates = false
+        var local = Snapshot()
+        try local.updatePreferences(from: defaults, to: settings, device: "local")
+        var remote = Snapshot()
+        XCTAssertTrue(remote.merge(local))
+        XCTAssertEqual(remote.values["pref/learnsPhrases"]?.value, Data("true".utf8))
+        XCTAssertEqual(remote.values["pref/autoCheckUpdates"]?.value, Data("false".utf8))
+        XCTAssertEqual(remote.values["pref/automaticallyInstallUpdates"]?.value, Data("false".utf8))
+        let speech = try XCTUnwrap(remote.values["pref/speechConfiguration"]?.value)
+        XCTAssertEqual(try JSONDecoder().decode(Data.self, from: speech), settings.speechConfiguration)
+    }
+
     func testTextAndSCELImport() throws {
         let tsv = "水火\tiioo\t10\ntest\t测试\t3"
         let text = try DictionaryImport.read(Data(tsv.utf8), extension: "txt", lexicon: lexicon)

@@ -38,6 +38,7 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var punctuationOverrides: [String: String] = [:]
     public var appRules: [String: AppLanguageRule] = [:]
     public var automaticallyRanks = true
+    public var learnsPhrases: Bool?
     public var rankingRange = RankingRange.ordinary
     public var candidateCount = 9
     public var showContinuations = true
@@ -64,6 +65,9 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var traditional = false
     public var mixedPinyin = false
     public var pinyinOnly = false
+    public var speechConfiguration: Data?
+    public var autoCheckUpdates: Bool?
+    public var automaticallyInstallUpdates: Bool?
 
     public var inputScheme: InputScheme {
         get { pinyinOnly ? .pinyin : (mixedPinyin ? .mixed : .wubi) }

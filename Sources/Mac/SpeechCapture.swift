@@ -109,15 +109,6 @@ struct SpeechConfiguration: Codable, Equatable {
         }
     }
 
-    static func load() -> Self {
-        guard let data = UserDefaults.standard.data(forKey: "speechConfiguration"),
-              let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
-        return value
-    }
-
-    func save() {
-        UserDefaults.standard.set(try? JSONEncoder().encode(self), forKey: "speechConfiguration")
-    }
 }
 
 enum SpeechError: LocalizedError {
@@ -208,6 +199,7 @@ final class SpeechCapture {
                completed: @escaping (Result<String, Error>) -> Void) {
         cancel()
         self.configuration = configuration
+        if self.configuration.model.isEmpty { self.configuration.model = configuration.provider.defaultModel }
         self.didFinish = completed
         self.phase = phase
         authorize(session)
