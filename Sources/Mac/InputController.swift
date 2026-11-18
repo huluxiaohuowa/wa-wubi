@@ -8,16 +8,12 @@ final class InputController: IMKInputController {
     private static weak var activeController: InputController?
     private static var english = false
     private static var showingSpeechPermission = false
-    private static let markedCompositionApps: Set<String> = [
-        "com.tencent.xinWeChat", "com.openai.codex", "io.appmakes.otty"
-    ]
     private let store = LibraryStore.shared
     private let speech = SpeechCapture()
     private var state = Composition()
     private var shiftPressed = false
     private var pinyinRefreshPending = false
     private var boundLanguage = false
-    private var requiresCompositionMark = false
     private var compositionMarked = false
     private var consumedKeyDowns = Set<UInt16>()
     private var speaking = false
@@ -37,7 +33,6 @@ final class InputController: IMKInputController {
         Self.activeController = self
         let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        requiresCompositionMark = appID.map(Self.markedCompositionApps.contains) ?? false
         consumedKeyDowns.removeAll()
         let language = appID.flatMap { store.preferences.appRules[$0]?.language }
         boundLanguage = language != nil
@@ -79,11 +74,7 @@ final class InputController: IMKInputController {
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let target = sender as? IMKTextInput else { return false }
         if let active = Self.activeController, active !== self { return false }
-        if Self.activeController == nil {
-            Self.activeController = self
-            let appID = target.bundleIdentifier() ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            requiresCompositionMark = appID.map(Self.markedCompositionApps.contains) ?? false
-        }
+        if Self.activeController == nil { Self.activeController = self }
         if IsSecureEventInputEnabled() {
             if state.active { state.reset() }
             setCompositionMark(false, in: target)
@@ -93,11 +84,20 @@ final class InputController: IMKInputController {
             return false
         }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
-        if handleSpeechShortcut(event, flags: flags, target: target) { return true }
+        let handledBySpeech = handleSpeechShortcut(event, flags: flags, target: target)
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
-        if event.type == .keyUp { return consumedKeyDowns.remove(event.keyCode) != nil }
+        if event.type == .keyUp {
+            let consumed = consumedKeyDowns.remove(event.keyCode) != nil
+            return handledBySpeech || consumed
+        }
         guard event.type == .keyDown else { return false }
-        consumedKeyDowns.remove(event.keyCode)
+        let handled = handledBySpeech || handleKeyDown(event, flags: flags, target: target)
+        if handled { consumedKeyDowns.insert(event.keyCode) }
+        else { consumedKeyDowns.remove(event.keyCode) }
+        return handled
+    }
+
+    private func handleKeyDown(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         shiftPressed = false
         if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
@@ -118,7 +118,6 @@ final class InputController: IMKInputController {
         } else {
             result = state.handle(key, preferences: store.preferences, lookup: lookup)
         }
-        if requiresCompositionMark && result.handled { consumedKeyDowns.insert(event.keyCode) }
         apply(result, to: target)
         draw(target)
         return result.handled
@@ -375,7 +374,7 @@ final class InputController: IMKInputController {
 
     private func draw(_ target: IMKTextInput) {
         guard Self.activeController === self else { return }
-        setCompositionMark(requiresCompositionMark && !state.code.isEmpty, in: target)
+        setCompositionMark(state.active, in: target)
         let label: String
         let candidates: [Candidate]
         if let statusText {
