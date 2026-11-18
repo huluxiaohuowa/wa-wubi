@@ -66,12 +66,10 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: rankingFile),
            let saved = try? JSONDecoder().decode([String: [String: Int]].self, from: data) { ranking = saved }
         preferences.cloud = defaults.bool(forKey: "syncEnabled")
-        if let path = defaults.string(forKey: "syncPath") {
-            let folder = URL(fileURLWithPath: path, isDirectory: true)
-                .deletingLastPathComponent()
-                .appendingPathComponent(Self.syncFolder, isDirectory: true)
-            cloudFolder = folder
-            if folder.path != path { defaults.set(folder.path, forKey: "syncPath") }
+        if let path = defaults.string(forKey: "syncFolderPath") {
+            cloudFolder = URL(fileURLWithPath: path, isDirectory: true)
+        } else if preferences.cloud {
+            cloudFolder = defaultCloudFolder
         }
         cloudIdentity = defaults.data(forKey: "syncIdentity")
         reload()
@@ -391,10 +389,14 @@ final class LibraryStore: ObservableObject {
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
     }
 
+    private var defaultCloudFolder: URL {
+        cloudDrive.appendingPathComponent(Self.syncFolder, isDirectory: true)
+    }
+
     private func saveCloudLocation(_ folder: URL, identity: Data) {
         cloudFolder = folder
         cloudIdentity = identity
-        UserDefaults.standard.set(folder.path, forKey: "syncPath")
+        UserDefaults.standard.set(folder.path, forKey: "syncFolderPath")
         UserDefaults.standard.set(identity, forKey: "syncIdentity")
     }
 
@@ -436,7 +438,7 @@ final class LibraryStore: ObservableObject {
             status = "iCloud 帐户已变更。请选择此帐号的同步位置。"
             return
         }
-        let folder = cloudFolder ?? cloudDrive.appendingPathComponent(Self.syncFolder, isDirectory: true)
+        let folder = cloudFolder ?? defaultCloudFolder
         syncing = true
         status = "正在读取 iCloud Drive 词库和设置…"
         DispatchQueue.global(qos: .utility).async {
