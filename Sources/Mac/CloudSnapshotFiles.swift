@@ -7,67 +7,121 @@ enum CloudSnapshotFiles {
         case invalidSnapshot
     }
 
-    static func read(from folder: URL, excluding device: String? = nil) throws -> Snapshot? {
+    private static let filename = "state.json"
+    private static let sizeLimit = 128 * 1024 * 1024
+
+    static func read(from folder: URL) throws -> Snapshot? {
+        let imported = try readDeviceSnapshots(from: folder)
+        return try coordinate(folder.appendingPathComponent(filename)) { file in
+            let (snapshot, conflicts) = try readSharedFile(file)
+            guard snapshot != nil || imported != nil || !conflicts.isEmpty else { return nil }
+            var merged = snapshot ?? Snapshot()
+            if let imported { merged.merge(imported) }
+            for version in conflicts { merged.merge(try decode(version.url)) }
+            return merged
+        }
+    }
+
+    static func sync(_ local: Snapshot, in folder: URL, canWrite: () -> Bool) throws -> Snapshot {
+        let imported = try readDeviceSnapshots(from: folder)
+        guard canWrite() else { throw CocoaError(.fileWriteNoPermission) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return try coordinate(folder.appendingPathComponent(filename), writing: true) { file in
+            let (current, conflicts) = try readSharedFile(file)
+            var merged = current ?? Snapshot()
+            var needsWrite = current == nil
+            if let imported, merged.merge(imported) { needsWrite = true }
+            for version in conflicts {
+                if merged.merge(try decode(version.url)) { needsWrite = true }
+            }
+            if merged.merge(local) { needsWrite = true }
+
+            guard canWrite() else { throw CocoaError(.fileWriteNoPermission) }
+            if needsWrite {
+                let data = try JSONEncoder().encode(merged)
+                guard data.count <= sizeLimit else { throw AccessError.invalidSnapshot }
+                try data.write(to: file, options: .atomic)
+            }
+            for version in conflicts {
+                version.isResolved = true
+                try version.remove()
+            }
+            return merged
+        }
+    }
+
+    private static func readSharedFile(_ file: URL) throws -> (Snapshot?, [NSFileVersion]) {
+        let current: Snapshot?
+        do {
+            current = try decode(file)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            current = nil
+        }
+        return (current, NSFileVersion.unresolvedConflictVersionsOfItem(at: file) ?? [])
+    }
+
+    private static func readDeviceSnapshots(from folder: URL) throws -> Snapshot? {
         let files = FileManager.default
-        let keys: [URLResourceKey] = [.ubiquitousItemDownloadingStatusKey, .fileSizeKey, .isRegularFileKey]
         let items: [URL]
         do {
-            items = try files.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)
+            items = try files.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
             return nil
         }
-        var merged = Snapshot()
-        var found = false
-        var downloading = false
+
+        var merged: Snapshot?
         for item in items {
-            let legacyPlaceholder = item.pathExtension == "icloud"
-            let file = legacyPlaceholder ? item.deletingPathExtension() : item
-            guard file.pathExtension == "json" else { continue }
-            let name = file.deletingPathExtension().lastPathComponent
-            let id = legacyPlaceholder && name.hasPrefix(".") ? String(name.dropFirst()) : name
-            guard UUID(uuidString: id) != nil, id != device else { continue }
-            let values = try item.resourceValues(forKeys: Set(keys))
-            if legacyPlaceholder || values.ubiquitousItemDownloadingStatus == .notDownloaded {
-                let target = legacyPlaceholder ? folder.appendingPathComponent(id + ".json") : item
-                try files.startDownloadingUbiquitousItem(at: target)
-                downloading = true
-                continue
+            let placeholder = item.pathExtension == "icloud"
+            let name = item.lastPathComponent
+            let file = placeholder && name.hasPrefix(".") ? String(name.dropFirst().dropLast(".icloud".count)) : name
+            let id = String(file.dropLast(".json".count))
+            let isDeviceSnapshot = file.hasSuffix(".json") && UUID(uuidString: id) != nil
+            guard file == filename || isDeviceSnapshot else { continue }
+            if placeholder {
+                try files.startDownloadingUbiquitousItem(at: folder.appendingPathComponent(file))
+                throw AccessError.downloading
             }
-            let sizeLimit = 128 * 1024 * 1024
-            guard values.isRegularFile == true, let size = values.fileSize, size <= sizeLimit else {
-                throw AccessError.invalidSnapshot
-            }
-            var coordinationError: NSError?
-            var read: Result<Snapshot, Error>?
-            NSFileCoordinator().coordinate(readingItemAt: item, options: [], error: &coordinationError) { url in
-                read = Result {
-                    let data = try Data(contentsOf: url)
-                    guard data.count <= sizeLimit else { throw AccessError.invalidSnapshot }
-                    let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
-                    guard snapshot.version == Snapshot.format else { throw AccessError.invalidSnapshot }
-                    return snapshot
-                }
-            }
-            if let coordinationError { throw coordinationError }
-            guard let read else { throw AccessError.invalidSnapshot }
-            merged.merge(try read.get())
-            found = true
+            guard isDeviceSnapshot else { continue }
+            let snapshot = try coordinate(item) { try decode($0) }
+            if merged == nil { merged = snapshot }
+            else { merged?.merge(snapshot) }
         }
-        if downloading { throw AccessError.downloading }
-        return found ? merged : nil
+        return merged
     }
 
-    static func write(_ snapshot: Snapshot, in folder: URL, device: String) throws {
-        let data = try JSONEncoder().encode(snapshot)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appendingPathComponent(device + ".json")
-        var coordinationError: NSError?
-        var writing: Result<Void, Error>?
-        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { file in
-            writing = Result { try data.write(to: file, options: .atomic) }
+    private static func decode(_ url: URL) throws -> Snapshot {
+        let values = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .fileSizeKey, .isRegularFileKey])
+        if values.ubiquitousItemDownloadingStatus == .notDownloaded {
+            try FileManager.default.startDownloadingUbiquitousItem(at: url)
+            throw AccessError.downloading
         }
-        if let coordinationError { throw coordinationError }
-        guard let writing else { throw CocoaError(.fileWriteUnknown) }
-        try writing.get()
+        guard values.isRegularFile == true, let size = values.fileSize, size <= sizeLimit else {
+            throw AccessError.invalidSnapshot
+        }
+        let data = try Data(contentsOf: url)
+        guard data.count <= sizeLimit,
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
+              snapshot.version == Snapshot.format else { throw AccessError.invalidSnapshot }
+        return snapshot
+    }
+
+    private static func coordinate<T>(
+        _ url: URL, writing: Bool = false, _ access: (URL) throws -> T
+    ) throws -> T {
+        let coordinator = NSFileCoordinator()
+        var error: NSError?
+        var result: Result<T, Error>?
+        if writing {
+            coordinator.coordinate(writingItemAt: url, options: [], error: &error) { file in
+                result = Result { try access(file) }
+            }
+        } else {
+            coordinator.coordinate(readingItemAt: url, options: [], error: &error) { file in
+                result = Result { try access(file) }
+            }
+        }
+        if let error { throw error }
+        guard let result else { throw CocoaError(writing ? .fileWriteUnknown : .fileReadUnknown) }
+        return try result.get()
     }
 }

@@ -51,7 +51,6 @@ final class LibraryStore: ObservableObject {
     private var rankSave: DispatchWorkItem?
     private var cloudIdentity: Data?
     private var timer: Timer?
-    private var cloudDirty = true
     private let beforeCloud = applicationSupport.appendingPathComponent("before-cloud.json")
 
     var canRestoreBeforeCloud: Bool { FileManager.default.fileExists(atPath: beforeCloud.path) }
@@ -198,7 +197,6 @@ final class LibraryStore: ObservableObject {
             return
         }
         snapshot = updated
-        cloudDirty = true
         preferences = next
         if next.inputScheme != .wubi { preparePinyin() }
         sync()
@@ -355,7 +353,6 @@ final class LibraryStore: ObservableObject {
     private func persist() {
         do {
             try save(snapshot, to: local)
-            cloudDirty = true
         } catch {
             status = "无法保存本地词库和设置。"
         }
@@ -366,7 +363,6 @@ final class LibraryStore: ObservableObject {
     }
 
     private func persistInBackground() {
-        cloudDirty = true
         let state = snapshot
         let url = local
         persistenceQueue.async { [weak self] in
@@ -462,7 +458,6 @@ final class LibraryStore: ObservableObject {
                     self.saveCloudLocation(folder, identity: identity)
                     self.setCloudEnabled(true)
                     self.reload()
-                    self.cloudDirty = resolution != .replaceWithCloud
                     if self.preferences.inputScheme != .wubi { self.preparePinyin() }
                     self.status = "已启用 iCloud 同步。"
                     self.sync()
@@ -512,15 +507,9 @@ final class LibraryStore: ObservableObject {
         guard identity == cloudIdentity else { status = "iCloud 帐户已变更，请关闭同步后重新选择位置。"; return }
         syncing = true
         let sent = snapshot
-        let write = cloudDirty
-        let device = device
-        cloudDirty = false
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let result = Result {
-                let received = try CloudSnapshotFiles.read(from: folder, excluding: device)
-                guard self?.currentCloudIdentity() == identity else { throw CocoaError(.fileWriteNoPermission) }
-                if write { try CloudSnapshotFiles.write(sent, in: folder, device: device) }
-                return received
+                try CloudSnapshotFiles.sync(sent, in: folder) { self?.currentCloudIdentity() == identity }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -528,14 +517,13 @@ final class LibraryStore: ObservableObject {
                 guard self.cloudFolder == folder, self.preferences.cloud else { return }
                 switch result {
                 case .success(let received):
-                    if let received, self.snapshot.merge(received) {
+                    if self.snapshot.merge(received) {
                         self.reload()
                         self.persist()
                         if self.preferences.inputScheme != .wubi { self.preparePinyin() }
                     }
                     self.status = "已读写 iCloud Drive，跨设备传输由系统完成。"
                 case .failure(let error):
-                    self.cloudDirty = self.cloudDirty || write
                     self.status = self.cloudMessage(for: error)
                 }
             }
