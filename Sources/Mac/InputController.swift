@@ -8,13 +8,16 @@ final class InputController: IMKInputController {
     private static weak var activeController: InputController?
     private static var english = false
     private static var showingSpeechPermission = false
+    private static let markedCompositionApps: Set<String> = [
+        "com.tencent.xinWeChat", "com.openai.codex", "io.appmakes.otty"
+    ]
     private let store = LibraryStore.shared
     private let speech = SpeechCapture()
     private var state = Composition()
     private var shiftPressed = false
     private var pinyinRefreshPending = false
     private var boundLanguage = false
-    private var weChatClient = false
+    private var requiresCompositionMark = false
     private var compositionMarked = false
     private var consumedKeyDowns = Set<UInt16>()
     private var speaking = false
@@ -34,7 +37,7 @@ final class InputController: IMKInputController {
         Self.activeController = self
         let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        weChatClient = appID == "com.tencent.xinWeChat"
+        requiresCompositionMark = appID.map(Self.markedCompositionApps.contains) ?? false
         consumedKeyDowns.removeAll()
         let language = appID.flatMap { store.preferences.appRules[$0]?.language }
         boundLanguage = language != nil
@@ -78,8 +81,8 @@ final class InputController: IMKInputController {
         if let active = Self.activeController, active !== self { return false }
         if Self.activeController == nil {
             Self.activeController = self
-            weChatClient = (target.bundleIdentifier() ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
-                == "com.tencent.xinWeChat"
+            let appID = target.bundleIdentifier() ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            requiresCompositionMark = appID.map(Self.markedCompositionApps.contains) ?? false
         }
         if IsSecureEventInputEnabled() {
             if state.active { state.reset() }
@@ -115,7 +118,7 @@ final class InputController: IMKInputController {
         } else {
             result = state.handle(key, preferences: store.preferences, lookup: lookup)
         }
-        if weChatClient && result.handled { consumedKeyDowns.insert(event.keyCode) }
+        if requiresCompositionMark && result.handled { consumedKeyDowns.insert(event.keyCode) }
         apply(result, to: target)
         draw(target)
         return result.handled
@@ -346,7 +349,7 @@ final class InputController: IMKInputController {
     private func setCompositionMark(_ active: Bool, in target: IMKTextInput) {
         guard compositionMarked != active else { return }
         compositionMarked = active
-        // WeChat expects a marked range during composition. Keep the actual code in the candidate panel.
+        // Some clients need a marked range to suppress raw keys. Keep the code in the candidate panel.
         target.setMarkedText(active ? "\u{3000}" : "", selectionRange: NSRange(location: 0, length: 0),
                              replacementRange: replacement)
     }
@@ -372,7 +375,7 @@ final class InputController: IMKInputController {
 
     private func draw(_ target: IMKTextInput) {
         guard Self.activeController === self else { return }
-        setCompositionMark(weChatClient && !state.code.isEmpty, in: target)
+        setCompositionMark(requiresCompositionMark && !state.code.isEmpty, in: target)
         let label: String
         let candidates: [Candidate]
         if let statusText {
