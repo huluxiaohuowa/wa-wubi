@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Speech
 import Security
+import OSLog
 
 enum SpeechProvider: String, CaseIterable, Identifiable, Codable {
     case apple, openAI, groq, siliconFlow, custom
@@ -120,10 +121,11 @@ struct SpeechConfiguration: Codable, Equatable {
 }
 
 enum SpeechError: LocalizedError {
-    case microphone, permission, unavailable, configuration, start, response(Int), noText, keychain, timeout
+    case microphone, microphoneRestricted, permission, unavailable, configuration, start, response(Int), noText, keychain, timeout
     var errorDescription: String? {
         switch self {
         case .microphone: return "请在系统设置中授权麦克风。"
+        case .microphoneRestricted: return "macOS 限制了此进程访问麦克风。"
         case .permission: return "请在系统设置中授权 Apple 语音识别。"
         case .unavailable: return "当前语言的 Apple 识别不可用。"
         case .configuration: return "请填写 HTTPS 转写接口、模型和 API 密钥。"
@@ -189,6 +191,7 @@ private final class NoSpeechRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 final class SpeechCapture {
+    private static let logger = Logger(subsystem: "top.fuluwa.inputmethod.Wubi86", category: "SpeechPermissions")
     private static let uploadSession = URLSession(configuration: .ephemeral, delegate: NoSpeechRedirect(), delegateQueue: nil)
     private var recorder: AVAudioRecorder?
     private var recognition: SFSpeechRecognitionTask?
@@ -253,18 +256,39 @@ final class SpeechCapture {
                 return
             }
         }
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        Self.logger.info("Microphone authorization status: \(status.rawValue, privacy: .public)")
+        switch status {
+        case .authorized:
+            authorizeRecognition(id)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self, self.session == id else { return }
+                    if granted { self.authorizeRecognition(id) }
+                    else { self.finish(.failure(SpeechError.microphone), id: id) }
+                }
+            }
+        case .denied:
+            finish(.failure(SpeechError.microphone), id: id)
+        case .restricted:
+            finish(.failure(SpeechError.microphoneRestricted), id: id)
+        @unknown default:
+            finish(.failure(SpeechError.microphoneRestricted), id: id)
+        }
+    }
+
+    private func authorizeRecognition(_ id: UUID) {
+        guard configuration.provider == .apple else { record(id); return }
+        let status = SFSpeechRecognizer.authorizationStatus()
+        Self.logger.info("Apple speech authorization status: \(status.rawValue, privacy: .public)")
+        if status == .authorized { record(id); return }
+        guard status == .notDetermined else { finish(.failure(SpeechError.permission), id: id); return }
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 guard let self, self.session == id else { return }
-                guard granted else { self.finish(.failure(SpeechError.microphone), id: id); return }
-                if self.configuration.provider != .apple { self.record(id); return }
-                SFSpeechRecognizer.requestAuthorization { [weak self] status in
-                    DispatchQueue.main.async {
-                        guard let self, self.session == id else { return }
-                        if status == .authorized { self.record(id) }
-                        else { self.finish(.failure(SpeechError.permission), id: id) }
-                    }
-                }
+                if status == .authorized { self.record(id) }
+                else { self.finish(.failure(SpeechError.permission), id: id) }
             }
         }
     }

@@ -182,6 +182,21 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(restored.shiftSelectsCandidate, false)
     }
 
+    func testFirstShiftPreferencePersistsInSnapshot() throws {
+        let defaults = Preferences()
+        var english = defaults
+        english.shiftSelectsCandidate = false
+        var snapshot = Snapshot()
+        try snapshot.updatePreferences(from: defaults, to: english, device: "local")
+        let restored = try JSONDecoder().decode(Snapshot.self, from: JSONEncoder().encode(snapshot))
+        let shift = try XCTUnwrap(restored.values["pref/shiftSelectsCandidate"]?.value)
+        XCTAssertEqual(shift, Data("false".utf8))
+        XCTAssertEqual(restored.values.count, 1)
+        try snapshot.updatePreferences(from: english, to: defaults, device: "local")
+        let cleared = try XCTUnwrap(snapshot.values["pref/shiftSelectsCandidate"])
+        XCTAssertNil(cleared.value)
+    }
+
     func testTextAndSCELImport() throws {
         let tsv = "水火\tiioo\t10\ntest\t测试\t3"
         let text = try DictionaryImport.read(Data(tsv.utf8), extension: "txt", lexicon: lexicon)

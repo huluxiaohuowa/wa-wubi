@@ -3,7 +3,7 @@ import Carbon
 import CoreServices
 import SwiftUI
 
-final class InstallWindow: ObservableObject {
+final class InstallWindow: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = InstallWindow()
     private var window: NSWindow?
     @Published private(set) var installed = false
@@ -14,17 +14,25 @@ final class InstallWindow: ObservableObject {
     private var restoreSource: TISInputSource?
     private var temporarySourceID: String?
     private var firstInstallSourceID: String?
+    private var installedAt: Date?
 
     func open() {
         let window = NSWindow(contentViewController: NSHostingController(rootView: InstallerView(model: self)))
         window.title = "安装 WA 五笔"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.styleMask.remove(.resizable)
         window.center()
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool { !installing }
+
+    func windowWillClose(_ notification: Notification) {
+        DispatchQueue.main.async { NSApp.terminate(nil) }
     }
 
     func install() {
@@ -54,24 +62,18 @@ final class InstallWindow: ObservableObject {
         }
         installing = true
         error = nil
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: InstallPayload.identifier) {
-            _ = app.terminate()
-        }
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try InstallPayload.install(archive: archive) }
+            let finishedAt = Date()
             DispatchQueue.main.async {
-                self.installing = false
                 switch result {
                 case .success(let destination):
                     self.installed = true
-                    do {
-                        try InstallPayload.archiveLegacyInstall()
-                        self.enableSource(at: destination)
-                    } catch {
-                        self.registrationMessage = "系统版本已安装。请先移走个人输入法目录中残留的 WA 五笔旧版，再启用输入源。"
-                    }
+                    self.installedAt = finishedAt
+                    self.enableSource(at: destination)
                 case .failure:
-                    self.restoreInputSource()
+                    self.installing = false
+                    _ = self.restoreInputSource()
                     self.error = "未完成系统安装。请确认已批准管理员授权，或重新下载安装镜像。"
                 }
             }
@@ -79,12 +81,27 @@ final class InstallWindow: ObservableObject {
     }
 
     func enableSource(at destination: URL = InstallPayload.folder.appendingPathComponent(InstallPayload.name)) {
-        _ = LSRegisterURL(destination as CFURL, true)
-        if Self.enabledModes().isEmpty, TISRegisterInputSource(destination as CFURL) != noErr {
-            registrationMessage = "安装文件已就位，但 macOS 尚未注册输入源。首次安装时，可保存工作后重新登录再添加。"
+        guard let installedAt else { return }
+        installing = true
+        registrationMessage = "正在启动新版本…"
+        do {
+            try InstallPayload.archiveLegacyInstall()
+        } catch {
+            installing = false
+            registrationMessage = "系统版本已安装。请先移走个人输入法目录中残留的 WA 五笔旧版，再重试启用。"
             return
         }
-        findAndEnable(remainingAttempts: 8)
+        _ = LSRegisterURL(destination as CFURL, true)
+        _ = TISRegisterInputSource(destination as CFURL)
+        Task { @MainActor in
+            do {
+                try await InputMethodRuntime.reload(at: destination, installedBefore: installedAt)
+                findAndEnable(remainingAttempts: 8)
+            } catch {
+                installing = false
+                registrationMessage = "更新文件已安装，但新进程未就绪。可点击「重试启用」。"
+            }
+        }
     }
 
     private func findAndEnable(remainingAttempts: Int) {
@@ -93,16 +110,17 @@ final class InstallWindow: ObservableObject {
             _ = TISEnableInputSource(mode)
         }
         let enabled = Self.enabledModes()
-        sourceEnabled = enabled.contains { source in
+        let selectable = enabled.first { source in
             guard let value = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable) else { return false }
             return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
         }
-        if sourceEnabled {
-            restoreInputSource(to: enabled.first)
-            if let sourceID = firstInstallSourceID, let mode = enabled.first,
+        if let selectable, restoreInputSource(to: selectable) {
+            sourceEnabled = true
+            installing = false
+            if let sourceID = firstInstallSourceID,
                let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
                Self.property(kTISPropertyInputSourceID, on: current) == sourceID {
-                _ = TISSelectInputSource(mode)
+                _ = TISSelectInputSource(selectable)
             }
             firstInstallSourceID = nil
             registrationMessage = "WA 五笔已可在菜单栏选择。"
@@ -111,16 +129,22 @@ final class InstallWindow: ObservableObject {
                 self?.findAndEnable(remainingAttempts: remainingAttempts - 1)
             }
         } else {
-            registrationMessage = "已安装，但当前会话未能启用。首次安装时，可保存工作后重新登录，再在「简体中文」下添加 WA 五笔。"
+            installing = false
+            registrationMessage = "新版本已启动，但当前会话未能启用输入源。可点击「重试启用」。"
         }
     }
 
-    private func restoreInputSource(to updatedSource: TISInputSource? = nil) {
-        defer { restoreSource = nil; temporarySourceID = nil }
-        guard let original = restoreSource,
-              let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              Self.property(kTISPropertyInputSourceID, on: current) == temporarySourceID else { return }
-        _ = TISSelectInputSource(updatedSource ?? original)
+    private func restoreInputSource(to updatedSource: TISInputSource? = nil) -> Bool {
+        guard let original = restoreSource else { return true }
+        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
+        if Self.property(kTISPropertyInputSourceID, on: current) == temporarySourceID {
+            guard TISSelectInputSource(updatedSource ?? original) == noErr,
+                  let selected = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                  Self.property(kTISPropertyInputSourceID, on: selected) == InstallPayload.mode else { return false }
+        }
+        restoreSource = nil
+        temporarySourceID = nil
+        return true
     }
 
     private static func enabledModes() -> [TISInputSource] {
@@ -154,16 +178,16 @@ private struct InstallerView: View {
                     Text(message).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button("完成") { NSApp.terminate(nil) }
+                    Button("完成") { NSApp.terminate(nil) }.disabled(model.installing)
                     Spacer()
-                    if !model.sourceEnabled {
-                        Button("重新启用") { model.enableSource() }
+                    if !model.sourceEnabled && !model.installing {
+                        Button("重试启用") { model.enableSource() }
                     }
                     Button("打开键盘设置") {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
                             NSWorkspace.shared.open(url)
                         }
-                    }.buttonStyle(.borderedProminent)
+                    }.buttonStyle(.borderedProminent).disabled(model.installing)
                 }
             } else {
                 Text("将原生 86 五笔输入法安装到系统目录，供这台 Mac 的所有账号使用。安装需要管理员授权。")

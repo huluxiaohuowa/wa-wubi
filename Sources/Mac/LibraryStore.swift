@@ -143,20 +143,10 @@ final class LibraryStore: ObservableObject {
         change(&next)
         next.cloud = old.cloud
         guard next != old else { return }
+        do { try snapshot.updatePreferences(from: old, to: next, device: device) }
+        catch { status = "无法保存输入设置。"; return }
         preferences = next
         if next.inputScheme != .wubi { preparePinyin() }
-        let encoder = JSONEncoder()
-        if let before = try? encoder.encode(old), let after = try? encoder.encode(next),
-           let original = try? JSONSerialization.jsonObject(with: before) as? [String: Any],
-           let modified = try? JSONSerialization.jsonObject(with: after) as? [String: Any] {
-            for (field, value) in modified where field != "cloud" {
-                guard let new = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]),
-                      let previous = original[field],
-                      let old = try? JSONSerialization.data(withJSONObject: previous, options: [.fragmentsAllowed, .sortedKeys]),
-                      new != old else { continue }
-                snapshot.set("pref/" + field, to: new, device: device)
-            }
-        }
         persist()
         sync()
     }

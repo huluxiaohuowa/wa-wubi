@@ -33,6 +33,18 @@ public struct Snapshot: Codable, Sendable {
 
     public init() {}
 
+    public mutating func updatePreferences(from old: Preferences, to new: Preferences, device: String) throws {
+        let encoder = JSONEncoder()
+        let original = try JSONSerialization.jsonObject(with: encoder.encode(old)) as? [String: Any] ?? [:]
+        let modified = try JSONSerialization.jsonObject(with: encoder.encode(new)) as? [String: Any] ?? [:]
+        for field in Set(original.keys).union(modified.keys).sorted() where field != "cloud" {
+            let options: JSONSerialization.WritingOptions = [.fragmentsAllowed, .sortedKeys]
+            let previous = try original[field].map { try JSONSerialization.data(withJSONObject: $0, options: options) }
+            let current = try modified[field].map { try JSONSerialization.data(withJSONObject: $0, options: options) }
+            if previous != current { set("pref/" + field, to: current, device: device) }
+        }
+    }
+
     public mutating func set(_ key: String, to value: Data?, device: String, at date: Date = Date()) {
         let counter = values.values.map(\.revision.counter).max() ?? 0
         let previous = values[key]?.modifiedAt
