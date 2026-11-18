@@ -12,7 +12,7 @@ struct WordGroup: Codable, Identifiable, Sendable {
 
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
-    static let syncFolder = "WA 五笔同步"
+    static let syncFolder = "Wa-Wubi"
     static let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("WA 五笔", isDirectory: true)
 
@@ -66,7 +66,13 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: rankingFile),
            let saved = try? JSONDecoder().decode([String: [String: Int]].self, from: data) { ranking = saved }
         preferences.cloud = defaults.bool(forKey: "syncEnabled")
-        if let path = defaults.string(forKey: "syncPath") { cloudFolder = URL(fileURLWithPath: path, isDirectory: true) }
+        if let path = defaults.string(forKey: "syncPath") {
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+                .deletingLastPathComponent()
+                .appendingPathComponent(Self.syncFolder, isDirectory: true)
+            cloudFolder = folder
+            if folder.path != path { defaults.set(folder.path, forKey: "syncPath") }
+        }
         cloudIdentity = defaults.data(forKey: "syncIdentity")
         reload()
         migrateLocalPreferences(defaults)
