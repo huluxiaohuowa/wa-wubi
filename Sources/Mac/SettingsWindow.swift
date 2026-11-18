@@ -200,6 +200,14 @@ struct SettingsView: View {
     private var input: some View {
         VStack(alignment: .leading, spacing: 13) {
             Toggle("轻按 Shift 切换中英", isOn: pref(\.shiftToggle))
+            Picker("Shift 切换时上屏", selection: Binding(
+                get: { store.preferences.shiftSelectsCandidate ?? true },
+                set: { pref(\.shiftSelectsCandidate).wrappedValue = $0 }
+            )) {
+                Text("英文编码").tag(false)
+                Text("首位候选").tag(true)
+            }
+            .disabled(!store.preferences.shiftToggle)
             Toggle("分号选择候选第二项", isOn: pref(\.semicolonSelect))
             Toggle("单引号选择候选第三项", isOn: pref(\.apostropheSelect))
             Toggle("四码唯一候选自动上屏", isOn: pref(\.autoCommit))
@@ -443,12 +451,24 @@ struct SpeechSettings: View {
     @ObservedObject var store: LibraryStore
     @State private var key = ""
     @State private var message = ""
+    @State private var shortcutMonitor: Any?
+    @State private var recordedShortcut: SpeechShortcut?
+    @State private var shortcutPrompt = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Toggle("启用按住说话", isOn: $store.speech.enabled)
-            Picker("按住说话快捷键", selection: $store.speech.shortcut) {
-                ForEach(SpeechShortcut.allCases) { shortcut in Text(shortcut.label).tag(shortcut) }
+            HStack {
+                Text("按住说话快捷键")
+                Spacer()
+                Button(shortcutMonitor == nil ? store.speech.shortcut.label : "取消录入") {
+                    if shortcutMonitor == nil { recordShortcut() } else { stopRecordingShortcut() }
+                }
+                Button("恢复默认") { store.speech.shortcut = .standard }
+                    .disabled(shortcutMonitor != nil || store.speech.shortcut == .standard)
+            }
+            if shortcutMonitor != nil {
+                Text(shortcutPrompt).foregroundStyle(.secondary).font(.caption)
             }
             Text("按住 \(store.speech.shortcut.label) 直到出现「正在聆听」，松手后自动转写上屏。")
                 .foregroundStyle(.secondary)
@@ -483,10 +503,58 @@ struct SpeechSettings: View {
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
         }
         .onAppear { loadDefaults() }
+        .onDisappear { stopRecordingShortcut() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            stopRecordingShortcut()
+        }
         .onChange(of: store.speech.provider) { _ in
             store.speech.model = store.speech.provider.defaultModel
             loadDefaults()
         }
+    }
+
+    private func recordShortcut() {
+        shortcutPrompt = "按下并松开组合键，按 Esc 取消。"
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
+            let flags = event.modifierFlags.intersection(SpeechShortcut.modifiers)
+            switch event.type {
+            case .keyDown:
+                if event.keyCode == 53 {
+                    stopRecordingShortcut()
+                } else if !event.isARepeat {
+                    recordedShortcut = SpeechShortcut(keyEvent: event)
+                    shortcutPrompt = recordedShortcut?.label ?? "请按住修饰键，再按另一个键。"
+                }
+            case .keyUp:
+                if let shortcut = recordedShortcut, shortcut.keyCode == event.keyCode {
+                    finishRecordingShortcut(shortcut)
+                }
+            case .flagsChanged:
+                if recordedShortcut?.keyCode != nil { break }
+                if flags.isEmpty, let shortcut = recordedShortcut {
+                    finishRecordingShortcut(shortcut)
+                } else if flags.rawValue.nonzeroBitCount >= 2,
+                          flags.rawValue.nonzeroBitCount >= (recordedShortcut?.flags.rawValue.nonzeroBitCount ?? 0) {
+                    let shortcut = SpeechShortcut(flags: flags)
+                    recordedShortcut = shortcut
+                    shortcutPrompt = shortcut.label
+                }
+            default:
+                break
+            }
+            return nil
+        }
+    }
+
+    private func finishRecordingShortcut(_ shortcut: SpeechShortcut) {
+        store.speech.shortcut = shortcut
+        stopRecordingShortcut()
+    }
+
+    private func stopRecordingShortcut() {
+        if let shortcutMonitor { NSEvent.removeMonitor(shortcutMonitor) }
+        shortcutMonitor = nil
+        recordedShortcut = nil
     }
 
     private func loadDefaults() {

@@ -14,7 +14,7 @@ final class InputController: IMKInputController {
     private var pinyinRefreshPending = false
     private var boundLanguage = false
     private var speaking = false
-    private var speechFlags: NSEvent.ModifierFlags?
+    private var speechShortcut: SpeechShortcut?
     private var speechHold: DispatchWorkItem?
     private var statusText: String?
     private var statusClear: DispatchWorkItem?
@@ -23,7 +23,7 @@ final class InputController: IMKInputController {
     private var lookup: (Composition.Mode, String) -> [Candidate] { store.candidates }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
-        Int((NSEvent.EventTypeMask.keyDown.union(.flagsChanged)).rawValue)
+        Int(NSEvent.EventTypeMask([.keyDown, .keyUp, .flagsChanged]).rawValue)
     }
 
     override func activateServer(_ sender: Any!) {
@@ -66,19 +66,17 @@ final class InputController: IMKInputController {
         if let active = Self.activeController, active !== self { return false }
         if Self.activeController == nil { Self.activeController = self }
         if IsSecureEventInputEnabled() {
-            if state.active {
-                state.reset()
-                target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
-            }
+            if state.active { state.reset() }
             shiftPressed = false
             stopSpeech()
             return false
         }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
+        if handleSpeechShortcut(event, flags: flags, target: target) { return true }
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
         guard event.type == .keyDown else { return false }
         shiftPressed = false
-        if speechFlags != nil || speaking || statusText != nil { stopSpeech() }
+        if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
         if !state.english, store.preferences.inputScheme != .wubi || (event.keyCode == 50 && !state.active) {
@@ -96,12 +94,8 @@ final class InputController: IMKInputController {
             draw(target)
             return true
         }
-        let wasActive = state.active
         let result = state.handle(key, preferences: store.preferences, lookup: lookup)
         apply(result, to: target)
-        if wasActive && !state.active && result.text.isEmpty && result.handled {
-            target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
-        }
         draw(target)
         return result.handled
     }
@@ -118,40 +112,50 @@ final class InputController: IMKInputController {
         }
     }
 
-    private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
-        let isShift = event.keyCode == 56 || event.keyCode == 60
-        if let held = speechFlags {
+    private func handleSpeechShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
+        if let held = speechShortcut {
             shiftPressed = false
-            if !flags.contains(held) {
+            let releasedKey = event.type == .keyUp && held.keyCode == event.keyCode
+            if releasedKey || (event.type == .flagsChanged && !flags.contains(held.flags)) {
                 speechHold?.cancel()
                 speechHold = nil
-                speechFlags = nil
+                speechShortcut = nil
                 if speaking {
                     speaking = false
                     speech.release()
                     if statusText == nil { CandidatePanel.shared.hide(for: self) }
                 }
             }
-            return false
+            return releasedKey || (event.type == .keyDown && held.keyCode == event.keyCode)
         }
-        if store.speech.enabled, flags == store.speech.shortcut.flags {
-            shiftPressed = false
-            speechFlags = flags
-            let hold = DispatchWorkItem { [weak self] in
-                guard let self, Self.activeController === self, self.speechFlags == flags,
-                      self.store.speech.enabled, self.store.speech.shortcut.flags == flags else { return }
-                self.speechHold = nil
-                self.startSpeech(target)
-            }
-            speechHold = hold
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: hold)
-            return false
+        let shortcut = store.speech.shortcut
+        guard store.speech.enabled, flags == shortcut.flags else { return false }
+        if let keyCode = shortcut.keyCode {
+            guard event.type == .keyDown, event.keyCode == keyCode, !event.isARepeat else { return false }
+        } else {
+            guard event.type == .flagsChanged else { return false }
         }
+        shiftPressed = false
+        speechShortcut = shortcut
+        let hold = DispatchWorkItem { [weak self] in
+            guard let self, Self.activeController === self, self.speechShortcut == shortcut,
+                  self.store.speech.enabled, self.store.speech.shortcut == shortcut else { return }
+            self.speechHold = nil
+            self.startSpeech(target)
+        }
+        speechHold = hold
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: hold)
+        return shortcut.keyCode != nil
+    }
+
+    private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
+        guard speechShortcut == nil else { return false }
+        let isShift = event.keyCode == 56 || event.keyCode == 60
         guard isShift, store.preferences.shiftToggle else { shiftPressed = false; return false }
         if flags == [.shift] { shiftPressed = true; return false }
         defer { shiftPressed = false }
         if flags.isEmpty && shiftPressed {
-            apply(state.toggleEnglish(), to: target)
+            apply(state.shiftToggleEnglish(selectsCandidate: store.preferences.shiftSelectsCandidate ?? true), to: target)
             if !boundLanguage { Self.english = state.english }
             if store.preferences.modeHints { notify(state.english ? "A · 英文" : "五 · 中文", at: target) }
             else { draw(target) }
@@ -190,7 +194,7 @@ final class InputController: IMKInputController {
     private func stopSpeech() {
         speechHold?.cancel()
         speechHold = nil
-        speechFlags = nil
+        speechShortcut = nil
         speech.cancel()
         speaking = false
         statusClear?.cancel()
@@ -295,14 +299,22 @@ final class InputController: IMKInputController {
     }
 
     private func caret(_ target: IMKTextInput) -> CGRect {
-        var rect = CGRect.zero
-        _ = target.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
-        if rect.isEmpty {
-            var range = NSRange(location: NSNotFound, length: 0)
-            rect = target.firstRect(forCharacterRange: target.selectedRange(), actualRange: &range)
-        }
-        guard rect.minX.isFinite, rect.minY.isFinite else { return .zero }
-        return rect
+        var line = CGRect.zero
+        _ = target.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
+        let anchor = caretAnchor(line)
+        if !anchor.isEmpty { return anchor }
+
+        let selection = target.selectedRange()
+        guard selection.location != NSNotFound else { return .zero }
+        let insertion = NSRange(location: selection.location, length: 0)
+        return caretAnchor(target.firstRect(forCharacterRange: insertion, actualRange: nil))
+    }
+
+    private func caretAnchor(_ rect: CGRect) -> CGRect {
+        let rect = rect.standardized
+        guard rect.minX.isFinite, rect.minY.isFinite, rect.width.isFinite,
+              rect.height.isFinite, rect.height > 0 else { return .zero }
+        return CGRect(x: rect.minX, y: rect.minY, width: max(1, rect.width), height: rect.height)
     }
 
     private func draw(_ target: IMKTextInput) {
@@ -322,12 +334,6 @@ final class InputController: IMKInputController {
                 guard store.preferences.traditional else { return candidate }
                 return Candidate(candidate.word.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? candidate.word,
                                  hint: candidate.hint)
-            }
-            let preedit = state.code
-            if !preedit.isEmpty {
-                target.setMarkedText(preedit, selectionRange: NSRange(location: preedit.utf16.count, length: 0), replacementRange: replacement)
-            } else {
-                target.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: replacement)
             }
         } else {
             CandidatePanel.shared.hide(for: self)

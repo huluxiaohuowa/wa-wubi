@@ -54,6 +54,7 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var fontSize = 19.0
     public var vertical = false
     public var shiftToggle = true
+    public var shiftSelectsCandidate: Bool?
     public var semicolonSelect = true
     public var apostropheSelect = true
     public var autoCommit = false
@@ -129,6 +130,18 @@ public struct Composition {
 
     public mutating func toggleEnglish() -> Result {
         let result = active ? accept(index: selected) : Result()
+        english.toggle()
+        return result
+    }
+
+    public mutating func shiftToggleEnglish(selectsCandidate: Bool) -> Result {
+        let result: Result
+        if active {
+            page = 0
+            result = accept(index: 0, raw: !selectsCandidate)
+        } else {
+            result = Result()
+        }
         english.toggle()
         return result
     }

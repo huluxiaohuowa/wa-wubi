@@ -33,10 +33,8 @@ enum SpeechProvider: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum SpeechShortcut: String, CaseIterable, Identifiable, Codable {
+private enum LegacySpeechShortcut: String, Codable {
     case controlShift, controlOption, optionShift, commandShift, commandOption, controlCommand
-
-    var id: Self { self }
 
     var flags: NSEvent.ModifierFlags {
         switch self {
@@ -49,9 +47,46 @@ enum SpeechShortcut: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+}
+
+struct SpeechShortcut: Codable, Equatable {
+    static let modifiers: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+    static let standard = Self(flags: [.control, .shift])
+
+    private let modifierMask: UInt
+    let keyCode: UInt16?
+    private let keyName: String?
+
+    init(flags: NSEvent.ModifierFlags, keyCode: UInt16? = nil, keyName: String? = nil) {
+        modifierMask = flags.rawValue
+        self.keyCode = keyCode
+        self.keyName = keyName
+    }
+
+    var flags: NSEvent.ModifierFlags { .init(rawValue: modifierMask) }
+
     var label: String {
-        [(NSEvent.ModifierFlags.control, "Control"), (.option, "Option"), (.shift, "Shift"), (.command, "Command")]
-            .filter { flags.contains($0.0) }.map { $0.1 }.joined(separator: " + ")
+        let names: [(NSEvent.ModifierFlags, String)] = [
+            (.control, "Control"), (.option, "Option"), (.shift, "Shift"), (.command, "Command")
+        ]
+        return (names.filter { flags.contains($0.0) }.map { $0.1 } + [keyName].compactMap { $0 })
+            .joined(separator: " + ")
+    }
+
+    init?(keyEvent event: NSEvent) {
+        let flags = event.modifierFlags.intersection(Self.modifiers)
+        guard !flags.isEmpty else { return nil }
+        let special: [UInt16: String] = [
+            36: "Return", 48: "Tab", 49: "Space", 51: "Delete",
+            123: "←", 124: "→", 125: "↓", 126: "↑"
+        ]
+        let characters = event.charactersIgnoringModifiers ?? ""
+        let printable = characters.unicodeScalars.allSatisfy {
+            !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value)
+        }
+        let name = special[event.keyCode] ?? (printable && !characters.isEmpty ? characters.uppercased() : nil)
+        guard let name else { return nil }
+        self.init(flags: flags, keyCode: event.keyCode, keyName: name)
     }
 }
 
@@ -62,11 +97,15 @@ struct SpeechConfiguration: Codable, Equatable {
     var endpoint = ""
     var model = ""
     var onDeviceOnly = false
-    private var holdShortcut: SpeechShortcut?
+    private var holdShortcut: LegacySpeechShortcut?
+    private var recordedShortcut: SpeechShortcut?
 
     var shortcut: SpeechShortcut {
-        get { holdShortcut ?? .controlShift }
-        set { holdShortcut = newValue }
+        get { recordedShortcut ?? holdShortcut.map { SpeechShortcut(flags: $0.flags) } ?? .standard }
+        set {
+            recordedShortcut = newValue
+            holdShortcut = nil
+        }
     }
 
     static func load() -> Self {

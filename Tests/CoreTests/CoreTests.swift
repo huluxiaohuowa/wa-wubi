@@ -161,6 +161,27 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(state.handle(.letter("a"), preferences: prefs, lookup: keys).handled)
     }
 
+    func testShiftCommitPreference() throws {
+        var state = Composition()
+        let prefs = Preferences()
+        let keys: (Composition.Mode, String) -> [Candidate] = { _, _ in [Candidate("还"), Candidate("一水")] }
+        for key in "gip" { _ = state.handle(.letter(key), preferences: prefs, lookup: keys) }
+        XCTAssertEqual(state.shiftToggleEnglish(selectsCandidate: false).text, "gip")
+        XCTAssertTrue(state.english)
+        XCTAssertFalse(state.active)
+        XCTAssertEqual(state.shiftToggleEnglish(selectsCandidate: true).text, "")
+        for key in "gip" { _ = state.handle(.letter(key), preferences: prefs, lookup: keys) }
+        _ = state.handle(.forward, preferences: prefs, lookup: keys)
+        XCTAssertEqual(state.shiftToggleEnglish(selectsCandidate: true).text, "还")
+
+        let previous = try JSONEncoder().encode(prefs)
+        XCTAssertNil(try JSONDecoder().decode(Preferences.self, from: previous).shiftSelectsCandidate)
+        var updated = prefs
+        updated.shiftSelectsCandidate = false
+        let restored = try JSONDecoder().decode(Preferences.self, from: JSONEncoder().encode(updated))
+        XCTAssertEqual(restored.shiftSelectsCandidate, false)
+    }
+
     func testTextAndSCELImport() throws {
         let tsv = "水火\tiioo\t10\ntest\t测试\t3"
         let text = try DictionaryImport.read(Data(tsv.utf8), extension: "txt", lexicon: lexicon)
