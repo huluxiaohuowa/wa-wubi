@@ -320,26 +320,31 @@ public struct Composition {
         return upper
     }
 
-    private mutating func punctuate(_ character: Character, preferences: Preferences) -> Result {
-        let prefix = active ? accept(index: selected) : Result()
-        func withMark(_ mark: String) -> Result {
-            Result(true, prefix.text + mark, selections: prefix.selections)
-        }
-        guard preferences.chinesePunctuation else { return Result(false, prefix.text, selections: prefix.selections) }
+    private static let chineseMarks: [Character: String] = [",":"，", ".":"。", ";":"；", ":":"：", "?":"？", "!":"！", "(":"（", ")":"）", "[":"【", "]":"】", "<":"《", ">":"》", "\\":"、", "^":"……", "_":"——"]
+
+    public func punctuationMark(_ character: Character, preferences: Preferences) -> String? {
+        guard preferences.chinesePunctuation else { return nil }
         if preferences.customPunctuation, let mark = preferences.punctuationOverrides[String(character)] {
-            return withMark(mark)
+            return mark
         }
         if character == "\"" {
-            let mark = openDouble ? (preferences.cornerQuotes ? "「" : "“") : (preferences.cornerQuotes ? "」" : "”")
-            if preferences.pairedQuotes { openDouble.toggle() } else { openDouble = true }
-            return withMark(mark)
+            return openDouble ? (preferences.cornerQuotes ? "「" : "“") : (preferences.cornerQuotes ? "」" : "”")
         }
         if character == "'" {
-            let mark = openSingle ? (preferences.cornerQuotes ? "『" : "‘") : (preferences.cornerQuotes ? "』" : "’")
-            if preferences.pairedQuotes { openSingle.toggle() } else { openSingle = true }
-            return withMark(mark)
+            return openSingle ? (preferences.cornerQuotes ? "『" : "‘") : (preferences.cornerQuotes ? "』" : "’")
         }
-        let marks: [Character: String] = [",":"，", ".":"。", ";":"；", ":":"：", "?":"？", "!":"！", "(":"（", ")":"）", "[":"【", "]":"】", "<":"《", ">":"》", "\\":"、", "^":"……", "_":"——"]
-        return marks[character].map(withMark) ?? Result(false, prefix.text, selections: prefix.selections)
+        return Self.chineseMarks[character]
+    }
+
+    private mutating func punctuate(_ character: Character, preferences: Preferences) -> Result {
+        let prefix = active ? accept(index: selected) : Result()
+        guard let mark = punctuationMark(character, preferences: preferences) else {
+            return Result(false, prefix.text, selections: prefix.selections)
+        }
+        if !preferences.customPunctuation || preferences.punctuationOverrides[String(character)] == nil {
+            if character == "\"" { openDouble = !preferences.pairedQuotes || !openDouble }
+            if character == "'" { openSingle = !preferences.pairedQuotes || !openSingle }
+        }
+        return Result(true, prefix.text + mark, selections: prefix.selections)
     }
 }

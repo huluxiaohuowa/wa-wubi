@@ -3,13 +3,6 @@ import CryptoKit
 import SwiftUI
 import WubiCore
 
-struct WordGroup: Codable, Identifiable, Sendable {
-    var id: String
-    var name: String
-    var entries: [Entry]
-    var version: String?
-}
-
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
     static let syncFolder = "Wa-Wubi"

@@ -1,8 +1,7 @@
 import Foundation
-import WubiCore
 
-enum CloudSnapshotFiles {
-    enum AccessError: Error {
+public enum CloudSnapshotFiles {
+    public enum AccessError: Error {
         case downloading
         case invalidSnapshot
     }
@@ -59,7 +58,7 @@ enum CloudSnapshotFiles {
         let merged: Snapshot
     }
 
-    static func read(from folder: URL) throws -> Snapshot? {
+    public static func read(from folder: URL) throws -> Snapshot? {
         try coordinate(Part.settings.url(in: folder)) { file in
             let settings = try readFile(file, as: .settings)
             var snapshot = settings.merged
@@ -74,7 +73,7 @@ enum CloudSnapshotFiles {
         }
     }
 
-    static func sync(_ local: Snapshot, in folder: URL, canWrite: () -> Bool) throws -> Snapshot {
+    public static func sync(_ local: Snapshot, in folder: URL, canWrite: () -> Bool) throws -> Snapshot {
         guard canWrite() else { throw CocoaError(.fileWriteNoPermission) }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 

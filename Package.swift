@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "WAWubi",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v13), .iOS(.v17)],
     products: [.library(name: "WubiCore", targets: ["WubiCore"]), .executable(name: "WAWubi", targets: ["WAWubi"]), .executable(name: "WAInstaller", targets: ["WAInstaller"])],
     targets: [
         .target(name: "WubiCore", path: "Sources/Core"),
