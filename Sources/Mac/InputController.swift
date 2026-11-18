@@ -14,6 +14,9 @@ final class InputController: IMKInputController {
     private var shiftPressed = false
     private var pinyinRefreshPending = false
     private var boundLanguage = false
+    private var weChatClient = false
+    private var compositionMarked = false
+    private var consumedKeyDowns = Set<UInt16>()
     private var speaking = false
     private var speechShortcut: SpeechShortcut?
     private var speechHold: DispatchWorkItem?
@@ -31,6 +34,8 @@ final class InputController: IMKInputController {
         Self.activeController = self
         let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        weChatClient = appID == "com.tencent.xinWeChat"
+        consumedKeyDowns.removeAll()
         let language = appID.flatMap { store.preferences.appRules[$0]?.language }
         boundLanguage = language != nil
         let english = language.map { $0 == .english } ?? Self.english
@@ -47,7 +52,12 @@ final class InputController: IMKInputController {
     override func deactivateServer(_ sender: Any!) {
         stopSpeech()
         shiftPressed = false
-        if let target = sender as? IMKTextInput, state.active { apply(state.accept(index: state.selected), to: target) }
+        if let target = sender as? IMKTextInput {
+            if state.active { apply(state.accept(index: state.selected), to: target) }
+            setCompositionMark(false, in: target)
+        }
+        compositionMarked = false
+        consumedKeyDowns.removeAll()
         state.reset()
         CandidatePanel.shared.hide(for: self)
         if Self.activeController === self { Self.activeController = nil }
@@ -59,15 +69,22 @@ final class InputController: IMKInputController {
     override func commitComposition(_ sender: Any!) {
         guard let target = sender as? IMKTextInput, state.active else { return }
         apply(state.accept(index: state.selected), to: target)
+        setCompositionMark(false, in: target)
         CandidatePanel.shared.hide(for: self)
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let target = sender as? IMKTextInput else { return false }
         if let active = Self.activeController, active !== self { return false }
-        if Self.activeController == nil { Self.activeController = self }
+        if Self.activeController == nil {
+            Self.activeController = self
+            weChatClient = (target.bundleIdentifier() ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+                == "com.tencent.xinWeChat"
+        }
         if IsSecureEventInputEnabled() {
             if state.active { state.reset() }
+            setCompositionMark(false, in: target)
+            consumedKeyDowns.removeAll()
             shiftPressed = false
             stopSpeech()
             return false
@@ -75,7 +92,9 @@ final class InputController: IMKInputController {
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
         if handleSpeechShortcut(event, flags: flags, target: target) { return true }
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
+        if event.type == .keyUp { return consumedKeyDowns.remove(event.keyCode) != nil }
         guard event.type == .keyDown else { return false }
+        consumedKeyDowns.remove(event.keyCode)
         shiftPressed = false
         if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
@@ -88,14 +107,15 @@ final class InputController: IMKInputController {
             return false
         }
         if store.loading && !state.english { return false }
+        let result: Composition.Result
         if store.preferences.zFunction, state.code == "z", key == .space, !state.last.isEmpty {
             let word = state.last
             state.reset()
-            apply(.init(true, word), to: target)
-            draw(target)
-            return true
+            result = .init(true, word)
+        } else {
+            result = state.handle(key, preferences: store.preferences, lookup: lookup)
         }
-        let result = state.handle(key, preferences: store.preferences, lookup: lookup)
+        if weChatClient && result.handled { consumedKeyDowns.insert(event.keyCode) }
         apply(result, to: target)
         draw(target)
         return result.handled
@@ -318,8 +338,17 @@ final class InputController: IMKInputController {
         guard !result.text.isEmpty else { return }
         let value = store.preferences.traditional ?
             result.text.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? result.text : result.text
+        compositionMarked = false
         target.insertText(value, replacementRange: replacement)
         store.record(result.selections)
+    }
+
+    private func setCompositionMark(_ active: Bool, in target: IMKTextInput) {
+        guard compositionMarked != active else { return }
+        compositionMarked = active
+        // WeChat expects a marked range during composition. Keep the actual code in the candidate panel.
+        target.setMarkedText(active ? "\u{3000}" : "", selectionRange: NSRange(location: 0, length: 0),
+                             replacementRange: replacement)
     }
 
     private func caret(_ target: IMKTextInput) -> CGRect {
@@ -343,6 +372,7 @@ final class InputController: IMKInputController {
 
     private func draw(_ target: IMKTextInput) {
         guard Self.activeController === self else { return }
+        setCompositionMark(weChatClient && !state.code.isEmpty, in: target)
         let label: String
         let candidates: [Candidate]
         if let statusText {

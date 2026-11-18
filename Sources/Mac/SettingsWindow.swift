@@ -76,6 +76,7 @@ struct SettingsView: View {
                             .padding(.vertical, 9).padding(.horizontal, 10)
                             .foregroundStyle(model.page == page ? accent : Color.primary)
                             .background(model.page == page ? accent.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
                 Spacer()
