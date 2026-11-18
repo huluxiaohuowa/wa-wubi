@@ -14,10 +14,16 @@ public struct Revision: Codable, Comparable, Sendable {
     }
 }
 
-public struct Change: Codable, Sendable {
+public struct Change: Codable, Equatable, Sendable {
     public var revision: Revision
     public var value: Data?
     public var modifiedAt: Date?
+
+    public init(revision: Revision, value: Data?, modifiedAt: Date?) {
+        self.revision = revision
+        self.value = value
+        self.modifiedAt = modifiedAt
+    }
 
     func precedes(_ other: Self) -> Bool {
         let first = modifiedAt ?? .distantPast
@@ -31,7 +37,7 @@ public struct Snapshot: Codable, Sendable {
     public var version = format
     public private(set) var values: [String: Change] = [:]
 
-    public init() {}
+    public init(values: [String: Change] = [:]) { self.values = values }
 
     public mutating func updatePreferences(from old: Preferences, to new: Preferences, device: String) throws {
         let encoder = JSONEncoder()

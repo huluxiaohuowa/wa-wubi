@@ -5,7 +5,7 @@ build="${WAWUBI_BUILD_DIR:-$HOME/dev/build/wa-wubi/release}"
 export WAWUBI_BUILD_DIR="$build"
 export WAWUBI_CONFIGURATION=release
 export WAWUBI_UNIVERSAL=1
-export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.26}"
+export WAWUBI_VERSION="${WAWUBI_VERSION:-0.1.27}"
 : "${WAWUBI_SIGN_IDENTITY:?Developer ID Application signing identity required}"
 : "${WAWUBI_NOTARY_KEY_FILE:?Notary API private key file required}"
 : "${WAWUBI_NOTARY_KEY_ID:?Notary API key ID required}"
