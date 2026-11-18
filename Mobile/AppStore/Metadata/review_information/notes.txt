@@ -1,0 +1,8 @@
+WA Wubi is a native Wubi 86 input method for iPhone and iPad. It includes a system keyboard extension and a containing app with practice, dictionary management and settings. No WA Wubi account or demo login is required.
+
+1. In iOS Settings, open General > Keyboard > Keyboards > Add New Keyboard and add “WA 五笔”.
+2. Open a text field in Files or Messages and select WA 五笔 using the globe key. Type wq and select 你. This works offline with Allow Full Access disabled.
+3. On iPad or the inner display of iPhone Duo, the keyboard supports split layout and a floating mode within the keyboard area. Tap 123 to see the right-hand number pad in split mode.
+4. Full Access is optional. It allows the extension to save learned words and edits into the containing app’s shared App Group. iCloud sync is opt-in and uses the signed-in Apple account. Online dictionary downloads and optional speech transcription are initiated in the containing app.
+
+The keyboard does not use the microphone. System Dictation, when offered by iOS, is provided by the OS. The containing app requests microphone and speech permissions only when the user uses its practice voice feature.

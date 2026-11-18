@@ -116,6 +116,7 @@ struct MobileSettings: View {
             Section("语音与关于") {
                 NavigationLink("语音") { VoiceSettings(store: store) }
                 Link("使用指南", destination: URL(string: "https://wa-wubi.fuluwa.top/")!)
+                Link("隐私政策", destination: URL(string: "https://wa-wubi.fuluwa.top/privacy.html")!)
                 LabeledContent("版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
             }
         }

@@ -36,12 +36,18 @@ targets:
     platform: iOS
     sources:
       - path: Mobile/App
-        excludes: [OfflineCatalog.json, Info.plist, App.entitlements]
+        excludes: [OfflineCatalog.json, Info.plist, App.entitlements, PrivacyInfo.xcprivacy]
       - path: Mobile/App/OfflineCatalog.json
+        buildPhase: resources
+      - path: Mobile/App/PrivacyInfo.xcprivacy
         buildPhase: resources
       - Mobile/Shared
       - Sources/Mac/CandidateFont.swift
       - path: Resources/wubi86.dict.yaml
+        buildPhase: resources
+      - path: Resources/LGPL-3.0.txt
+        buildPhase: resources
+      - path: Resources/GPL-3.0.txt
         buildPhase: resources
       - path: Mobile/Resources
         buildPhase: resources
@@ -55,16 +61,23 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Mobile/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Mobile/App/App.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: $(WA_WUBI_APP_PROFILE)
   WAWubiKeyboard:
     type: app-extension
     templates: [candidateFont]
     platform: iOS
     sources:
       - path: Mobile/Keyboard
-        excludes: [Info.plist, Keyboard.entitlements]
+        excludes: [Info.plist, Keyboard.entitlements, PrivacyInfo.xcprivacy]
+      - path: Mobile/Keyboard/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - Mobile/Shared
       - Sources/Mac/CandidateFont.swift
       - path: Resources/wubi86.dict.yaml
+        buildPhase: resources
+      - path: Resources/LGPL-3.0.txt
+        buildPhase: resources
+      - path: Resources/GPL-3.0.txt
         buildPhase: resources
       - path: Mobile/Resources
         buildPhase: resources
@@ -75,6 +88,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: top.fuluwa.inputmethod.Wubi86.ios.keyboard
         INFOPLIST_FILE: Mobile/Keyboard/Info.plist
         CODE_SIGN_ENTITLEMENTS: Mobile/Keyboard/Keyboard.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: $(WA_WUBI_KEYBOARD_PROFILE)
         APPLICATION_EXTENSION_API_ONLY: YES
 schemes:
   WAWubiMobile:
