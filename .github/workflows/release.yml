@@ -21,6 +21,7 @@ jobs:
           WAWUBI_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           WAWUBI_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
           NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          PROVISIONING_PROFILE: ${{ secrets.APPLE_DEVELOPER_ID_PROFILE }}
         shell: bash
         run: |
           set -euo pipefail
@@ -38,6 +39,8 @@ jobs:
           security list-keychains -d user -s "$keychain"
           printf '%s' "$CERTIFICATE" | base64 -D > "$scratch/cert.p12"
           printf '%s' "$NOTARY_KEY" | base64 -D > "$scratch/AuthKey.p8"
+          printf '%s' "$PROVISIONING_PROFILE" | base64 -D > "$scratch/WA-Wubi.provisionprofile"
+          test -s "$scratch/WA-Wubi.provisionprofile"
           security import "$scratch/cert.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
           identity="$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ && !found {print $2; found=1}')"
@@ -45,6 +48,7 @@ jobs:
           export WAWUBI_BUILD_DIR="$release"
           export WAWUBI_SIGN_IDENTITY="$identity"
           export WAWUBI_NOTARY_KEY_FILE="$scratch/AuthKey.p8"
+          export WAWUBI_PROVISIONING_PROFILE="$scratch/WA-Wubi.provisionprofile"
           export WAWUBI_VERSION="${GITHUB_REF_NAME#v}"
           dmg="$(./script/package_release.sh)"
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"

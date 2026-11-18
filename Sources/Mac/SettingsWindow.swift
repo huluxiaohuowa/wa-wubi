@@ -249,7 +249,7 @@ private struct CloudSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("iCloud Drive").font(.title3.weight(.semibold))
-            Text("使用同一 Apple 账户的 Mac 可同步词库和输入偏好。首次开启时会自动准备 iCloud Drive 中的默认目录。")
+            Text("使用同一 Apple 账户的设备可通过 WA 五笔 iCloud 容器同步词库和输入偏好。首次同步会自动合并原同步目录中的数据。")
                 .foregroundStyle(.secondary)
             Toggle("启用 iCloud 同步", isOn: Binding(
                 get: { store.preferences.cloud },
@@ -262,11 +262,9 @@ private struct CloudSettings: View {
             ))
             .disabled(store.syncing)
             HStack {
-                Button("自定义位置…") { store.chooseCloudFolder() }.disabled(store.preferences.cloud || store.syncing)
                 Button("立即同步") { store.sync() }.disabled(!store.preferences.cloud || store.syncing)
                 if store.syncing { ProgressView().controlSize(.small) }
             }
-            if let folder = store.cloudFolder { Text(folder.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
             if !store.status.isEmpty { Text(store.status).font(.callout).foregroundStyle(.secondary) }
             Text("语音和更新偏好参与同步。语音服务密钥及系统授权由每台 Mac 单独管理。")
                 .font(.caption).foregroundStyle(.secondary)

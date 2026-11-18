@@ -16,8 +16,20 @@ cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Re
 cp Resources/{InputIcon.png,InputIcon@2x.png,BrandIcon.png,AppIcon.icns} "$app/Contents/Resources/"
 cp -R Resources/zh-Hans.lproj Resources/en.lproj "$app/Contents/Resources/"
 if [[ -n "${WAWUBI_SIGN_IDENTITY:-}" ]]; then
+    : "${WAWUBI_PROVISIONING_PROFILE:?Developer ID provisioning profile required}"
+    signing="$(mktemp -d "$output/signing.XXXXXX")"
+    trap 'rm -rf "$signing"' EXIT
+    security cms -D -i "$WAWUBI_PROVISIONING_PROFILE" -o "$signing/profile.plist"
+    app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$signing/profile.plist")"
+    team_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$signing/profile.plist")"
+    bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")"
+    test "$app_id" = "$team_id.$bundle_id"
+    cp "$WAWUBI_PROVISIONING_PROFILE" "$app/Contents/embedded.provisionprofile"
+    cp Resources/Release.entitlements "$signing/entitlements.plist"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $app_id" \
+        -c "Add :com.apple.developer.team-identifier string $team_id" "$signing/entitlements.plist"
     codesign --force --sign "$WAWUBI_SIGN_IDENTITY" --options runtime --timestamp \
-        --entitlements Resources/Release.entitlements "$app" >&2
+        --entitlements "$signing/entitlements.plist" "$app" >&2
 else
     codesign --force --sign - "$app" >&2
 fi

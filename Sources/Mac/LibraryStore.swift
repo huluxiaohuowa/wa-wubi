@@ -13,6 +13,7 @@ struct WordGroup: Codable, Identifiable, Sendable {
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
     static let syncFolder = "Wa-Wubi"
+    static let cloudContainerID = "iCloud.top.fuluwa.inputmethod.Wubi86"
     static let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("WA 五笔", isDirectory: true)
 
@@ -21,7 +22,6 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var loading = true
     @Published private(set) var syncing = false
-    @Published private(set) var cloudFolder: URL?
     @Published private(set) var pinyinReady = false
     var speech: SpeechConfiguration {
         get {
@@ -65,11 +65,6 @@ final class LibraryStore: ObservableObject {
         if let data = try? Data(contentsOf: rankingFile),
            let saved = try? JSONDecoder().decode([String: [String: Int]].self, from: data) { ranking = saved }
         preferences.cloud = defaults.bool(forKey: "syncEnabled")
-        if let path = defaults.string(forKey: "syncFolderPath") {
-            cloudFolder = URL(fileURLWithPath: path, isDirectory: true)
-        } else if preferences.cloud {
-            cloudFolder = defaultCloudFolder
-        }
         cloudIdentity = defaults.data(forKey: "syncIdentity")
         reload()
         migrateLocalPreferences(defaults)
@@ -380,69 +375,52 @@ final class LibraryStore: ObservableObject {
         try JSONEncoder().encode(state).write(to: url, options: .atomic)
     }
 
-    private var cloudDrive: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
-    }
-
-    private var defaultCloudFolder: URL {
-        cloudDrive.appendingPathComponent(Self.syncFolder, isDirectory: true)
-    }
-
-    private func saveCloudLocation(_ folder: URL, identity: Data) {
-        cloudFolder = folder
-        cloudIdentity = identity
-        UserDefaults.standard.set(folder.path, forKey: "syncFolderPath")
-        UserDefaults.standard.set(identity, forKey: "syncIdentity")
-    }
-
-    @discardableResult
-    func chooseCloudFolder() -> Bool {
-        guard !preferences.cloud, !syncing else { return false }
-        let drive = cloudDrive
-        let opener = NSOpenPanel()
-        opener.canChooseFiles = false
-        opener.canChooseDirectories = true
-        opener.canCreateDirectories = false
-        opener.directoryURL = drive
-        opener.prompt = "选择 iCloud Drive"
-        opener.message = "请选择 iCloud Drive 或其中的文件夹。每台 Mac 选择相同位置。"
-        if opener.runModal() == .OK, let base = opener.url {
-            let basePath = base.resolvingSymlinksInPath().path
-            let drivePath = drive.resolvingSymlinksInPath().path
-            guard basePath == drivePath || basePath.hasPrefix(drivePath + "/"),
-                  let identity = currentCloudIdentity() else {
-                status = "请选择 iCloud Drive 内的文件夹，并确认已登录 iCloud。"
-                return false
-            }
-            let folder = base.appendingPathComponent(Self.syncFolder, isDirectory: true)
-            saveCloudLocation(folder, identity: identity)
-            status = "同步位置已选定。"
-            return true
+    private static func containerFolder() throws -> URL {
+        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: cloudContainerID) else {
+            throw CocoaError(.fileReadNoPermission)
         }
-        return false
+        return container.appendingPathComponent("Documents", isDirectory: true)
+            .appendingPathComponent(syncFolder, isDirectory: true)
+    }
+
+    private func legacyCloudFolder(for identity: Data) -> URL? {
+        let defaults = UserDefaults.standard
+        guard defaults.data(forKey: "cloudContainerMigrationIdentity") != identity else { return nil }
+        if let path = defaults.string(forKey: "syncFolderPath") {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+            .appendingPathComponent(Self.syncFolder, isDirectory: true)
+    }
+
+    private func saveCloudIdentity(_ identity: Data) {
+        cloudIdentity = identity
+        UserDefaults.standard.set(identity, forKey: "syncIdentity")
     }
 
     func enableCloud(using resolution: CloudResolution) {
         guard !preferences.cloud, !syncing else { return }
-        guard let identity = currentCloudIdentity(),
-              (try? cloudDrive.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+        guard let identity = currentCloudIdentity() else {
             status = "iCloud Drive 当前不可用。请在系统设置中开启 iCloud Drive 后重试。"
             return
         }
-        if let cloudIdentity, identity != cloudIdentity {
-            status = "iCloud 帐户已变更。请选择此帐号的同步位置。"
-            return
-        }
-        let folder = cloudFolder ?? defaultCloudFolder
+        let isNewAccount = cloudIdentity != nil && cloudIdentity != identity
+        let legacy = isNewAccount ? nil : legacyCloudFolder(for: identity)
         syncing = true
         status = "正在读取 iCloud Drive 词库和设置…"
         DispatchQueue.global(qos: .utility).async {
-            let result = Result { try CloudSnapshotFiles.read(from: folder) }
+            let result = Result {
+                let cloud = try CloudSnapshotFiles.read(from: Self.containerFolder())
+                let previous = try legacy.flatMap { try CloudSnapshotFiles.read(from: $0) }
+                guard var merged = cloud ?? previous else { return nil as Snapshot? }
+                if let previous { merged.merge(previous) }
+                return merged
+            }
             DispatchQueue.main.async {
                 self.syncing = false
                 guard identity == self.currentCloudIdentity() else {
-                    self.status = "iCloud 帐户已变更，请重新选择同步位置。"
+                    self.status = "iCloud 帐户已变更，请重新开启同步。"
                     return
                 }
                 do {
@@ -455,7 +433,10 @@ final class LibraryStore: ObservableObject {
                     try self.save(self.snapshot, to: self.beforeCloud)
                     try self.save(settled, to: self.local)
                     self.snapshot = settled
-                    self.saveCloudLocation(folder, identity: identity)
+                    if isNewAccount {
+                        UserDefaults.standard.set(identity, forKey: "cloudContainerMigrationIdentity")
+                    }
+                    self.saveCloudIdentity(identity)
                     self.setCloudEnabled(true)
                     self.reload()
                     if self.preferences.inputScheme != .wubi { self.preparePinyin() }
@@ -502,27 +483,57 @@ final class LibraryStore: ObservableObject {
 
     func sync() {
         guard preferences.cloud, !syncing else { return }
-        guard let folder = cloudFolder else { status = "请选择 iCloud Drive 同步位置。"; return }
         guard let identity = currentCloudIdentity() else { status = "iCloud Drive 当前不可用。"; return }
-        guard identity == cloudIdentity else { status = "iCloud 帐户已变更，请关闭同步后重新选择位置。"; return }
+        // The identity token obtained with iCloud Documents may differ from the
+        // token saved by a build that used the shared iCloud Drive folder.
+        let needsRebind = identity != cloudIdentity
+        let firstMigration = UserDefaults.standard.data(forKey: "cloudContainerMigrationIdentity") == nil
+        guard !needsRebind || firstMigration else {
+            status = "iCloud 帐户已变更，请关闭同步后重新开启。"
+            return
+        }
         syncing = true
+        let legacy = legacyCloudFolder(for: identity)
         let sent = snapshot
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let result = Result {
-                try CloudSnapshotFiles.sync(sent, in: folder) { self?.currentCloudIdentity() == identity }
+                let folder = try Self.containerFolder()
+                var outbound = sent
+                let previous = try legacy.flatMap { try CloudSnapshotFiles.read(from: $0) }
+                if needsRebind {
+                    // Only migrate data from the signed-in user's actual iCloud Drive.
+                    guard let legacy, FileManager.default.isUbiquitousItem(at: legacy), let previous else {
+                        throw CocoaError(.fileReadNoPermission)
+                    }
+                    outbound = previous
+                } else if let previous {
+                    outbound.merge(previous)
+                }
+                return try CloudSnapshotFiles.sync(outbound, in: folder) { self?.currentCloudIdentity() == identity }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.syncing = false
-                guard self.cloudFolder == folder, self.preferences.cloud else { return }
+                guard self.preferences.cloud, self.currentCloudIdentity() == identity else { return }
                 switch result {
                 case .success(let received):
-                    if self.snapshot.merge(received) {
+                    var settled = self.snapshot
+                    if settled.merge(received) {
+                        do {
+                            try self.save(settled, to: self.local)
+                        } catch {
+                            self.status = self.cloudMessage(for: error)
+                            return
+                        }
+                        self.snapshot = settled
                         self.reload()
-                        self.persist()
                         if self.preferences.inputScheme != .wubi { self.preparePinyin() }
                     }
-                    self.status = "已读写 iCloud Drive，跨设备传输由系统完成。"
+                    if needsRebind { self.saveCloudIdentity(identity) }
+                    if legacy != nil {
+                        UserDefaults.standard.set(identity, forKey: "cloudContainerMigrationIdentity")
+                    }
+                    self.status = "已同步到 WA 五笔 iCloud 容器。"
                 case .failure(let error):
                     self.status = self.cloudMessage(for: error)
                 }
