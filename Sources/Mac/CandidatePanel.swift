@@ -13,8 +13,13 @@ struct CandidateStrip: View {
     var pin: ((Int) -> Void)?
     var hide: ((Int) -> Void)?
     var changePage: ((Int) -> Void)?
+    var movable: Set<Int> = []
+    var move: ((Int, Int) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
+    @State private var frames: [Int: CGRect] = [:]
+    @State private var dragging: Int?
+    @State private var dropTarget: Int?
 
     private var light: Bool {
         preferences.theme == .paper || (preferences.theme == .system && colorScheme == .light)
@@ -49,7 +54,9 @@ struct CandidateStrip: View {
                 }
             } else {
                 ForEach(candidates.indices, id: \.self) { index in
-                    Button { choose?(index) } label: {
+                    let button = Button {
+                        if dragging == nil { choose?(index) }
+                    } label: {
                         HStack(spacing: 5) {
                             Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
                             Text(CandidateFont.label(candidates[index].word, size: preferences.fontSize))
@@ -62,12 +69,29 @@ struct CandidateStrip: View {
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .foregroundStyle(index == current ? Color.black.opacity(0.86) : ink)
                         .background(index == current ? highlight : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                        .overlay {
+                            if dropTarget == index && dragging != index {
+                                RoundedRectangle(cornerRadius: 6).strokeBorder(caption, lineWidth: 1.5)
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(index + 1) \(candidates[index].word)")
                     .contextMenu {
                         if let pin { Button("移到首位") { pin(index) } }
                         if let hide { Button("隐藏候选") { hide(index) } }
+                    }
+                    if movable.contains(index) {
+                        button.background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(key: CandidateFrames.self,
+                                                       value: [index: geometry.frame(in: .named("candidates"))])
+                            }
+                        }
+                        .simultaneousGesture(reorderGesture(from: index))
+                    } else {
+                        button
                     }
                 }
                 if pages > 1 {
@@ -85,6 +109,8 @@ struct CandidateStrip: View {
                 }
             }
         }
+        .coordinateSpace(name: "candidates")
+        .onPreferenceChange(CandidateFrames.self) { frames = $0 }
         .lineLimit(1)
         .padding(6)
         .fixedSize()
@@ -93,6 +119,29 @@ struct CandidateStrip: View {
                 .fill(background.opacity(preferences.opacity))
                 .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(ink.opacity(0.18)) }
         }
+    }
+
+    private func reorderGesture(from source: Int) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named("candidates"))
+            .onChanged { value in
+                dragging = source
+                dropTarget = frames.first { $0.value.contains(value.location) }?.key
+            }
+            .onEnded { value in
+                if let target = frames.first(where: { $0.value.contains(value.location) })?.key, target != source {
+                    move?(source, target)
+                }
+                dropTarget = nil
+                DispatchQueue.main.async { dragging = nil }
+            }
+    }
+}
+
+private struct CandidateFrames: PreferenceKey {
+    static let defaultValue: [Int: CGRect] = [:]
+
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 

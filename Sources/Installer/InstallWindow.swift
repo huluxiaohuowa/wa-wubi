@@ -22,7 +22,7 @@ final class InstallWindow: NSObject, ObservableObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.styleMask.remove(.resizable)
+        window.styleMask.remove([.resizable, .miniaturizable])
         window.center()
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
@@ -115,15 +115,13 @@ final class InstallWindow: NSObject, ObservableObject, NSWindowDelegate {
             return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
         }
         if let selectable, restoreInputSource(to: selectable) {
-            sourceEnabled = true
-            installing = false
             if let sourceID = firstInstallSourceID,
                let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
                Self.property(kTISPropertyInputSourceID, on: current) == sourceID {
                 _ = TISSelectInputSource(selectable)
             }
             firstInstallSourceID = nil
-            registrationMessage = "WA 五笔已可在菜单栏选择。"
+            finishInstallation()
         } else if remainingAttempts > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 self?.findAndEnable(remainingAttempts: remainingAttempts - 1)
@@ -131,6 +129,15 @@ final class InstallWindow: NSObject, ObservableObject, NSWindowDelegate {
         } else {
             installing = false
             registrationMessage = "新版本已启动，但当前会话未能启用输入源。可点击「重试启用」。"
+        }
+    }
+
+    private func finishInstallation() {
+        sourceEnabled = true
+        installing = false
+        registrationMessage = "WA 五笔已可在菜单栏选择。"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            NSApp.terminate(nil)
         }
     }
 

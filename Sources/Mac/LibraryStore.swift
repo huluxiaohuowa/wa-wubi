@@ -41,8 +41,10 @@ final class LibraryStore: ObservableObject {
     private var extras: [String: [Entry]] = [:]
     private(set) var preferredImportCodes: [String: String] = [:]
     private var edits: [String: [String: WordEdit]] = [:]
+    private var manualOrders: [String: [Candidate]] = [:]
     private let device: String
     private let local = applicationSupport.appendingPathComponent("state.json")
+    private let persistenceQueue = DispatchQueue(label: "top.fuluwa.WAWubi.persistence", qos: .utility)
     private var snapshot = Snapshot()
     private let rankingFile = applicationSupport.appendingPathComponent("candidate-ranking.json")
     private var ranking: [String: [String: Int]] = [:]
@@ -127,7 +129,8 @@ final class LibraryStore: ObservableObject {
     func candidates(_ mode: Composition.Mode, _ code: String) -> [Candidate] {
         if mode == .pinyin { return pinyin[code, default: []] }
         if code == "zz", preferences.zFunction {
-            return ["※", "—", "…", "·", "✓", "×", "→", "←", "↑", "↓", "★", "☆", "〇", "□", "■", "①", "②", "③"].map { Candidate($0) }
+            let symbols = ["※", "—", "…", "·", "✓", "×", "→", "←", "↑", "↓", "★", "☆", "〇", "□", "■", "①", "②", "③"]
+            return lexicon.applyingManualOrder(manualOrders[code, default: []], to: symbols.map { Candidate($0) }, code: code)
         }
         var words = lexicon.exact(code, extra: extras[code, default: []], edits: edits[code, default: [:]],
                                   includeContinuations: preferences.showContinuations)
@@ -138,9 +141,17 @@ final class LibraryStore: ObservableObject {
             words = lexicon.ranked(words, code: code, scores: ranking[code, default: [:]],
                                    edits: edits[code, default: [:]], includesFixed: preferences.rankingRange == .all)
         }
-        guard preferences.mixedPinyin else { return words }
-        let known = Set(words.map(\.word))
-        return words + pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+        if preferences.mixedPinyin {
+            let known = Set(words.map(\.word))
+            words += pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+        }
+        return lexicon.applyingManualOrder(manualOrders[code, default: []], to: words, code: code)
+    }
+
+    func saveCandidateOrder(_ order: [Candidate], for code: String) {
+        manualOrders[code] = order
+        set("order/" + code, order)
+        persistInBackground()
     }
 
     func record(_ selections: [Composition.Selection]) {
@@ -174,11 +185,18 @@ final class LibraryStore: ObservableObject {
         change(&next)
         next.cloud = old.cloud
         guard next != old else { return }
-        do { try snapshot.updatePreferences(from: old, to: next, device: device) }
-        catch { status = "无法保存输入设置。"; return }
+        var updated = snapshot
+        do {
+            try updated.updatePreferences(from: old, to: next, device: device)
+            try save(updated, to: local)
+        } catch {
+            status = "无法保存输入设置。"
+            return
+        }
+        snapshot = updated
+        cloudDirty = true
         preferences = next
         if next.inputScheme != .wubi { preparePinyin() }
-        persist()
         sync()
     }
 
@@ -208,9 +226,14 @@ final class LibraryStore: ObservableObject {
         guard preferredImportCodes[entry.word] == nil, lexicon.existingCode(for: entry.word) == nil,
               snapshot.values[key] == nil, edits[entry.code]?[entry.word]?.hidden != true else { return }
         set(key, entry)
-        reload()
-        persist()
-        sync()
+        preferredImportCodes[entry.word] = entry.code
+        extras[entry.code, default: []].append(entry)
+        if let index = groups.firstIndex(where: { $0.id == "personal" }) {
+            groups[index].entries.append(entry)
+        } else {
+            groups.insert(WordGroup(id: "personal", name: "用户词库", entries: [entry]), at: 0)
+        }
+        persistInBackground()
     }
 
     func remove(_ entry: Entry) {
@@ -263,6 +286,7 @@ final class LibraryStore: ObservableObject {
         var nextGroups: [WordGroup] = []
         var personal: [Entry] = []
         var nextEdits: [String: [String: WordEdit]] = [:]
+        var nextOrders: [String: [Candidate]] = [:]
         for (key, change) in snapshot.values {
             guard let value = change.value else { continue }
             if key.hasPrefix("pref/"), let item = try? JSONSerialization.jsonObject(with: value, options: .fragmentsAllowed) {
@@ -274,6 +298,8 @@ final class LibraryStore: ObservableObject {
             } else if key.hasPrefix("edit/"), let edit = try? decoder.decode(WordEdit.self, from: value),
                       let code = key.split(separator: "/", maxSplits: 2).dropFirst().first {
                 nextEdits[String(code), default: [:]][edit.word] = edit
+            } else if key.hasPrefix("order/"), let order = try? decoder.decode([Candidate].self, from: value) {
+                nextOrders[String(key.dropFirst(6))] = order
             }
         }
         if let data = try? JSONSerialization.data(withJSONObject: fields),
@@ -319,6 +345,7 @@ final class LibraryStore: ObservableObject {
             }.map(\.element)
         }
         edits = nextEdits
+        manualOrders = nextOrders
     }
 
     private func persist() {
@@ -331,7 +358,25 @@ final class LibraryStore: ObservableObject {
     }
 
     private func save(_ state: Snapshot, to url: URL) throws {
-        try FileManager.default.createDirectory(at: Self.applicationSupport, withIntermediateDirectories: true)
+        try persistenceQueue.sync { try Self.write(state, to: url) }
+    }
+
+    private func persistInBackground() {
+        cloudDirty = true
+        let state = snapshot
+        let url = local
+        persistenceQueue.async { [weak self] in
+            do { try Self.write(state, to: url) }
+            catch {
+                DispatchQueue.main.async { [weak self] in self?.status = "无法保存本地词库和设置。" }
+            }
+        }
+    }
+
+    func flushPendingSaves() { persistenceQueue.sync {} }
+
+    private static func write(_ state: Snapshot, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(state).write(to: url, options: .atomic)
     }
 

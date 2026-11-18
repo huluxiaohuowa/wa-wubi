@@ -26,4 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = LibraryStore.shared
         Task { @MainActor in UpdateManager.shared.start() }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        LibraryStore.shared.flushPendingSaves()
+    }
 }

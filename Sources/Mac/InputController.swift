@@ -68,8 +68,8 @@ final class InputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
-        phraseLearning.reset()
         guard let target = sender as? IMKTextInput, state.active else { return }
+        phraseLearning.reset()
         apply(state.accept(index: state.selected), to: target)
         setCompositionMark(false, in: target)
         CandidatePanel.shared.hide(for: self)
@@ -356,6 +356,16 @@ final class InputController: IMKInputController {
         draw(target)
     }
 
+    private func moveCandidate(from source: Int, to destination: Int, target: IMKTextInput) {
+        guard Self.activeController === self, state.mode == .wubi else { return }
+        let offset = state.page * state.pageSize
+        guard let order = store.lexicon.manualOrder(in: state.candidates, code: state.code,
+                                                   moving: offset + source, to: offset + destination) else { return }
+        store.saveCandidateOrder(order, for: state.code)
+        state.refresh(lookup)
+        draw(target)
+    }
+
     private func apply(_ result: Composition.Result, to target: IMKTextInput) {
         guard !result.text.isEmpty else { return }
         let value = store.preferences.traditional ?
@@ -415,6 +425,10 @@ final class InputController: IMKInputController {
             CandidatePanel.shared.hide(for: self)
             return
         }
+        let offset = state.page * state.pageSize
+        let movable = statusText == nil && state.mode == .wubi ? Set(state.visible.indices.filter { index in
+            store.lexicon.canMoveCandidate(state.visible[index], at: offset + index, code: state.code)
+        }) : []
         let view = CandidateStrip(code: label, candidates: candidates, current: state.selected,
                                   page: state.page, pages: state.pageCount, preferences: store.preferences,
                                   choose: { [weak self] index in
@@ -429,6 +443,8 @@ final class InputController: IMKInputController {
             guard let self, Self.activeController === self else { return }
             _ = self.state.handle(delta > 0 ? .next : .previous, preferences: self.store.preferences, lookup: self.lookup)
             self.draw(target)
+        }, movable: movable, move: { [weak self] source, destination in
+            self?.moveCandidate(from: source, to: destination, target: target)
         })
         CandidatePanel.shared.render(view, at: caret(target), for: self)
     }

@@ -249,6 +249,49 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Data.self, from: speech), settings.speechConfiguration)
     }
 
+    func testLearnsAfterDeletingAnAutomaticallyCommittedWord() {
+        let dictionary = Lexicon([Entry("重创", "tgwb"), Entry("笑", "ttdu"), Entry("死", "gqx"),
+                                  Entry("人", "w"), Entry("了", "b"), Entry("了", "bnh")])
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in dictionary.exact(code) }
+        var prefs = Preferences()
+        prefs.autoCommit = true
+        var input = Composition()
+        var learning = PhraseLearning()
+        let now = Date()
+        func key(_ value: Composition.Key) -> (Composition.Result, Entry?) {
+            let previous = input
+            let result = input.handle(value, preferences: prefs, lookup: lookup)
+            learning.handle(value, from: previous, to: input, now: now)
+            return (result, learning.record(result, lexicon: dictionary, now: now))
+        }
+        var automatic = Composition.Result()
+        for c in "tgwb" { automatic = key(.letter(c)).0 }
+        XCTAssertEqual(automatic.automaticSelection?.word, "重创")
+        XCTAssertFalse(key(.backspace).0.handled)
+        XCTAssertFalse(key(.backspace).0.handled)
+        for c in "ttdu" { XCTAssertNil(key(.letter(c)).1) }
+        for code in ["gqx", "w"] {
+            for c in code { XCTAssertNil(key(.letter(c)).1) }
+            XCTAssertNil(key(.space).1)
+        }
+        XCTAssertNil(key(.letter("b")).1)
+        XCTAssertEqual(key(.space).1, Entry("笑死人了", "tgwb"))
+    }
+
+    func testManualCandidateOrderKeepsFixedCandidatesInPlace() throws {
+        let dictionary = Lexicon([Entry("不", "i"), Entry("水", "iiii")])
+        let list = [Candidate("不"), Candidate("水"), Candidate("江", hint: "a"),
+                    Candidate("水流", hint: "ii"), Candidate("润", hint: "ugg")]
+        XCTAssertNil(dictionary.manualOrder(in: list, code: "i", moving: 0, to: 2))
+        XCTAssertNil(dictionary.manualOrder(in: list, code: "i", moving: 4, to: 1))
+        let order = try XCTUnwrap(dictionary.manualOrder(in: list, code: "i", moving: 4, to: 2))
+        let saved = try JSONDecoder().decode([Candidate].self, from: JSONEncoder().encode(order))
+        XCTAssertEqual(dictionary.applyingManualOrder(saved, to: list, code: "i"),
+                       [list[0], list[1], list[4], list[2], list[3]])
+        let rootCode = [Candidate("水"), Candidate("普通词"), Candidate("新词")]
+        XCTAssertNil(dictionary.manualOrder(in: rootCode, code: "iiii", moving: 2, to: 0))
+    }
+
     func testTextAndSCELImport() throws {
         let tsv = "水火\tiioo\t10\ntest\t测试\t3"
         let text = try DictionaryImport.read(Data(tsv.utf8), extension: "txt", lexicon: lexicon)

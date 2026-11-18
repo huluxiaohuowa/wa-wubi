@@ -95,10 +95,13 @@ public struct Composition {
         public var handled: Bool
         public var text: String
         public var selections: [Selection]
-        public init(_ handled: Bool = true, _ text: String = "", selections: [Selection] = []) {
+        public var automaticSelection: Selection?
+        public init(_ handled: Bool = true, _ text: String = "", selections: [Selection] = [],
+                    automaticSelection: Selection? = nil) {
             self.handled = handled
             self.text = text
             self.selections = selections
+            self.automaticSelection = automaticSelection
         }
     }
 
@@ -271,7 +274,8 @@ public struct Composition {
             refresh(lookup)
             if mode == .wubi, preferences.autoCommit, code.count == 4, candidates.count == 1 {
                 let selected = accept(index: 0)
-                return Result(true, prefix.text + selected.text, selections: prefix.selections + selected.selections)
+                return Result(true, prefix.text + selected.text, selections: prefix.selections + selected.selections,
+                              automaticSelection: selected.selections.first)
             }
             return prefix
         }

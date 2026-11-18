@@ -91,6 +91,7 @@ final class UpdateManager: ObservableObject {
                 let configuration = NSWorkspace.OpenConfiguration()
                 configuration.arguments = ["--apply-update"]
                 configuration.createsNewApplicationInstance = true
+                configuration.addsToRecentItems = false
                 let result = try await NSWorkspace.shared.openApplication(at: installer, configuration: configuration)
                 if !result.isTerminated {
                     message = "正在安装更新。若 macOS 请求管理员授权，请批准。"

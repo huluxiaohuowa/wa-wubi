@@ -16,7 +16,7 @@ public struct Entry: Hashable, Codable, Sendable {
     }
 }
 
-public struct Candidate: Equatable, Sendable {
+public struct Candidate: Hashable, Codable, Sendable {
     public let word: String
     public let hint: String
 
@@ -172,6 +172,32 @@ public final class Lexicon: @unchecked Sendable {
     }
 
     public func isFixedWord(_ word: String) -> Bool { fixedWords.contains(word) }
+
+    public func canMoveCandidate(_ candidate: Candidate, at index: Int, code: String) -> Bool {
+        index >= Self.protectedShortcutCount(for: code) && !isFixedWord(candidate.word)
+    }
+
+    public func manualOrder(in candidates: [Candidate], code: String, moving source: Int, to target: Int) -> [Candidate]? {
+        let positions = candidates.indices.filter { canMoveCandidate(candidates[$0], at: $0, code: code) }
+        guard source != target, let from = positions.firstIndex(of: source),
+              let to = positions.firstIndex(of: target) else { return nil }
+        var order = positions.map { candidates[$0] }
+        let moved = order.remove(at: from)
+        order.insert(moved, at: to)
+        return order
+    }
+
+    public func applyingManualOrder(_ order: [Candidate], to candidates: [Candidate], code: String) -> [Candidate] {
+        guard !order.isEmpty else { return candidates }
+        let ranks = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+        let positions = candidates.indices.filter {
+            canMoveCandidate(candidates[$0], at: $0, code: code) && ranks[candidates[$0]] != nil
+        }
+        let sorted = positions.map { candidates[$0] }.sorted { ranks[$0, default: 0] < ranks[$1, default: 0] }
+        var result = candidates
+        for (position, candidate) in zip(positions, sorted) { result[position] = candidate }
+        return result
+    }
 
     public func ranked(_ candidates: [Candidate], code: String, scores: [String: Int],
                        edits: [String: WordEdit], includesFixed: Bool) -> [Candidate] {

@@ -1,7 +1,7 @@
 import AppKit
 
 let application = NSApplication.shared
-application.setActivationPolicy(.regular)
+application.setActivationPolicy(.accessory)
 let appliesUpdate = CommandLine.arguments.contains("--apply-update")
 DispatchQueue.main.async {
     InstallWindow.shared.open()
