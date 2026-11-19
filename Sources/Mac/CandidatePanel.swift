@@ -9,6 +9,8 @@ struct CandidateStrip: View {
     let page: Int
     let pages: Int
     let preferences: Preferences
+    var availableWidth: CGFloat = .infinity
+    var forceVertical = false
     var choose: ((Int) -> Void)?
     var pin: ((Int) -> Void)?
     var hide: ((Int) -> Void)?
@@ -40,9 +42,13 @@ struct CandidateStrip: View {
     private var caption: Color { light ? Color(red: 0.13, green: 0.36, blue: 0.25) : highlight }
 
     var body: some View {
-        let layout = preferences.vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) :
+        strip(vertical: preferences.vertical || forceVertical)
+    }
+
+    private func strip(vertical: Bool) -> some View {
+        let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) :
             AnyLayout(HStackLayout(alignment: .center, spacing: 3))
-        layout {
+        return layout {
             Text(code)
                 .font(.system(size: max(12, preferences.fontSize - 5), weight: .semibold, design: .monospaced))
                 .foregroundStyle(caption)
@@ -60,8 +66,9 @@ struct CandidateStrip: View {
                         HStack(spacing: 5) {
                             Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
                             Text(CandidateFont.label(candidates[index].word, size: preferences.fontSize))
-                                .lineLimit(1).truncationMode(.tail)
-                                .frame(maxWidth: preferences.vertical ? 220 : (preferences.candidateCount > 6 ? 78 : 137))
+                                .lineLimit(vertical ? nil : 1)
+                                .fixedSize(horizontal: !vertical, vertical: true)
+                                .frame(maxWidth: vertical ? min(220, max(1, availableWidth - 70)) : nil)
                             if !candidates[index].hint.isEmpty {
                                 Text(candidates[index].hint).font(.system(size: 10, design: .monospaced))
                             }
@@ -111,7 +118,6 @@ struct CandidateStrip: View {
         }
         .coordinateSpace(name: "candidates")
         .onPreferenceChange(CandidateFrames.self) { frames = $0 }
-        .lineLimit(1)
         .padding(6)
         .fixedSize()
         .background {
@@ -165,16 +171,23 @@ final class CandidatePanel: NSPanel {
 
     func render(_ view: CandidateStrip, at caret: CGRect, for owner: InputController) {
         self.owner = owner
-        let host = NSHostingView(rootView: view)
-        if #available(macOS 13, *) { host.sizingOptions = [.intrinsicContentSize] }
-        contentView = host
-        let size = host.fittingSize
         let mouse = NSEvent.mouseLocation
         let anchor = caret.isEmpty ? CGRect(x: mouse.x, y: mouse.y, width: 1, height: 1) : caret
         guard let screen = NSScreen.screens.first(where: {
             $0.frame.contains(CGPoint(x: anchor.midX, y: anchor.midY))
         }) ?? NSScreen.main else { return }
         let bounds = screen.visibleFrame.insetBy(dx: 7, dy: 7)
+        var view = view
+        view.availableWidth = bounds.width
+        let host = NSHostingView(rootView: view)
+        if #available(macOS 13, *) { host.sizingOptions = [.intrinsicContentSize] }
+        contentView = host
+        var size = host.fittingSize
+        if !view.preferences.vertical && size.width > bounds.width {
+            view.forceVertical = true
+            host.rootView = view
+            size = host.fittingSize
+        }
         let below = anchor.minY - size.height - 5
         let y = below < bounds.minY ? min(bounds.maxY - size.height, anchor.maxY + 5) : below
         let x = max(bounds.minX, min(anchor.minX, bounds.maxX - size.width))
