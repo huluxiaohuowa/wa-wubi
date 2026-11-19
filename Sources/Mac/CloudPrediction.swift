@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import WubiCore
 
 struct CloudPredictionConfiguration: Codable, Equatable {
     var enabled = false
@@ -8,22 +9,9 @@ struct CloudPredictionConfiguration: Codable, Equatable {
     var translationLanguage = "英语"
     var showsGlosses: Bool?
 
-    var endpoint: URL? {
-        guard var url = URLComponents(string: baseURL),
-              let host = url.host, !host.isEmpty,
-              url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)),
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
-        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let base = path.isEmpty ? "/v1" : "/" + path
-        url.path = base.hasSuffix("/chat/completions") ? base : base + "/chat/completions"
-        return url.url
-    }
+    var endpoint: URL? { CloudCandidateService.endpoint(for: baseURL) }
 
-    var credentialOrigin: String? {
-        guard let endpoint, var origin = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
-        origin.path = ""
-        return origin.string
-    }
+    var credentialOrigin: String? { endpoint.flatMap(CloudCandidateService.credentialOrigin) }
 
     static var current: Self {
         guard let data = UserDefaults.standard.data(forKey: "cloudPrediction"),
@@ -47,14 +35,13 @@ struct CloudPredictionConfiguration: Codable, Equatable {
 }
 
 enum CloudPredictionError: LocalizedError {
-    case configuration, keychain, response, http(Int)
+    case configuration, keychain, response
 
     var errorDescription: String? {
         switch self {
         case .configuration: return "请填写有效的服务地址、模型和翻译目标语言。"
         case .keychain: return "无法保存云联想 API Key。"
         case .response: return "服务商没有返回可用结果。"
-        case .http(let status): return "服务商请求失败（HTTP \(status)）。"
         }
     }
 }
@@ -95,66 +82,15 @@ enum CloudPredictionKeychain {
     }
 }
 
-private final class NoCloudRedirect: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
 enum CloudPrediction {
-    struct Input: Encodable {
-        let pinyin: String?
-        let candidates: [String]
-        let precedingText: String
-    }
-
-    private struct Message: Codable {
-        let role: String
-        let content: String
-    }
-
-    private struct Request: Encodable {
-        let model: String
-        let messages: [Message]
-        let max_tokens: Int
-    }
-
-    private struct Response: Decodable {
-        struct Choice: Decodable {
-            struct Message: Decodable { let content: String? }
-            let message: Message
-        }
-        let choices: [Choice]
-    }
-
-    private static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 12
-        configuration.timeoutIntervalForResource = 20
-        configuration.httpShouldSetCookies = false
-        return URLSession(configuration: configuration, delegate: NoCloudRedirect(), delegateQueue: nil)
-    }()
+    typealias Input = CloudCandidateService.Input
 
     static func suggestions(_ input: Input, config: CloudPredictionConfiguration) async throws -> [String] {
-        let data = try JSONEncoder().encode(input)
-        let task = input.pinyin == nil
-            ? "每个候选必须从给定候选中的一个完整字词开始。"
-            : "每个候选必须和所给拼音对应，可返回词语或完整句子。"
-        let output = try await complete(
-            instruction: "你是中文输入法。根据数据提供最多三个中文候选。\(task) 前文仅作参考，勿复述。每行一个候选，不要编号、引号或解释。没有合适的候选就留空。",
-            input: String(decoding: data, as: UTF8.self), config: config, maxTokens: 160
-        )
-        var seen = Set(input.candidates)
-        return Array(output.split(whereSeparator: \.isNewline).compactMap { line -> String? in
-            let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard (1...48).contains(value.count),
-                  value.unicodeScalars.first?.properties.isIdeographic == true,
-                  !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-                  input.pinyin != nil || input.candidates.contains(where: { value.hasPrefix($0) }),
-                  seen.insert(value).inserted else { return nil }
-            return value
-        }.prefix(3))
+        guard config.enabled, let endpoint = config.endpoint, let origin = config.credentialOrigin else {
+            throw CloudPredictionError.configuration
+        }
+        return try await CloudCandidateService.suggestions(input, endpoint: endpoint, model: config.model,
+                                                            key: CloudPredictionKeychain.read(origin: origin))
     }
 
     static func glosses(_ words: [String], config: CloudPredictionConfiguration) async throws -> [String: String] {
@@ -175,24 +111,9 @@ enum CloudPrediction {
     static func complete(instruction: String, input: String, config: CloudPredictionConfiguration,
                          maxTokens: Int = 512) async throws -> String {
         guard config.enabled, let endpoint = config.endpoint, let origin = config.credentialOrigin,
-              !config.model.isEmpty else {
-            throw CloudPredictionError.configuration
-        }
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let key = CloudPredictionKeychain.read(origin: origin)
-        if !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
-        request.httpBody = try JSONEncoder().encode(Request(model: config.model, messages: [
-            Message(role: "system", content: instruction), Message(role: "user", content: input)
-        ], max_tokens: maxTokens))
-        try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw CloudPredictionError.response }
-        guard (200..<300).contains(http.statusCode) else { throw CloudPredictionError.http(http.statusCode) }
-        guard let result = try? JSONDecoder().decode(Response.self, from: data),
-              let text = result.choices.first?.message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else { throw CloudPredictionError.response }
-        return String(text.prefix(4000))
+              !config.model.isEmpty else { throw CloudPredictionError.configuration }
+        return try await CloudCandidateService.complete(instruction: instruction, input: input, endpoint: endpoint,
+                                                        model: config.model, key: CloudPredictionKeychain.read(origin: origin),
+                                                        maxTokens: maxTokens)
     }
 }

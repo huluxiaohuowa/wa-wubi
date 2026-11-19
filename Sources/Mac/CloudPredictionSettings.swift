@@ -1,7 +1,11 @@
 import SwiftUI
 
 struct CloudPredictionSettings: View {
+    private static let languages = ["英语", "日语", "韩语", "法语", "德语", "西班牙语", "越南语",
+                                    "俄语", "意大利语", "葡萄牙语", "泰语", "阿拉伯语"]
+
     @State private var config = CloudPredictionConfiguration.current
+    @State private var previousLanguage = CloudPredictionConfiguration.current.translationLanguage
     @State private var keyOrigin = CloudPredictionConfiguration.current.credentialOrigin
     @State private var key = CloudPredictionConfiguration.current.credentialOrigin
         .map { CloudPredictionKeychain.read(origin: $0) } ?? ""
@@ -17,7 +21,15 @@ struct CloudPredictionSettings: View {
             TextField("API 基础地址（OpenAI 兼容）", text: $config.baseURL)
             TextField("模型 ID", text: $config.model)
             SecureField("API Key（服务商需要时填写）", text: $key)
-            TextField("翻译目标语言", text: $config.translationLanguage)
+            Picker("翻译目标语言", selection: $config.translationLanguage) {
+                ForEach(Self.languages, id: \.self) { language in
+                    Text(language).tag(language)
+                }
+                if !Self.languages.contains(previousLanguage), !previousLanguage.isEmpty {
+                    Text(previousLanguage).tag(previousLanguage)
+                }
+            }
+            .pickerStyle(.menu)
             Toggle("为语言学习提供云端译词", isOn: Binding(
                 get: { config.showsGlosses ?? false }, set: { config.showsGlosses = $0 }
             ))
@@ -36,6 +48,9 @@ struct CloudPredictionSettings: View {
         .onChange(of: config.credentialOrigin) { origin in
             keyOrigin = origin
             key = origin.map { CloudPredictionKeychain.read(origin: $0) } ?? ""
+        }
+        .onAppear {
+            if config.translationLanguage.isEmpty { config.translationLanguage = "英语" }
         }
     }
 
