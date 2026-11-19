@@ -23,6 +23,7 @@ withExtendedLifetime(server) { application.run() }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LanguageLearning.migratePreference()
         _ = LibraryStore.shared
         Task { @MainActor in UpdateManager.shared.start() }
     }

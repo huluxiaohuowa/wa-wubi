@@ -127,6 +127,10 @@ struct PunctuationSettings: View {
 }
 
 struct AboutSettings: View {
+    @State private var confirmsUninstall = false
+    @State private var uninstalling = false
+    @State private var uninstallError = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             if let logo = NSImage(named: "BrandIcon") {
@@ -138,6 +142,29 @@ struct AboutSettings: View {
             Link("官网", destination: URL(string: "https://wa-wubi.fuluwa.top/")!)
             Link("反馈问题", destination: URL(string: "https://github.com/huluxiaohuowa/wa-wubi/issues")!)
             Link("内置 86 五笔码表与许可", destination: URL(string: "https://github.com/rime/rime-wubi")!)
+            Button("卸载 WA 五笔…", role: .destructive) { confirmsUninstall = true }
+                .disabled(uninstalling)
+            if !uninstallError.isEmpty {
+                Text(uninstallError).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .alert("卸载 WA 五笔？", isPresented: $confirmsUninstall) {
+            Button("取消", role: .cancel) {}
+            Button("卸载", role: .destructive) {
+                uninstalling = true
+                uninstallError = ""
+                Task { @MainActor in
+                    defer { uninstalling = false }
+                    do {
+                        try await Uninstall.perform()
+                        NSApp.terminate(nil)
+                    } catch {
+                        uninstallError = error.localizedDescription
+                    }
+                }
+            }
+        } message: {
+            Text("这会停用 WA 五笔并移除程序。系统级安装可能需要管理员授权。用户词库、设置和 iCloud 数据会保留。")
         }
     }
 }

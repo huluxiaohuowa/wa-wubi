@@ -1,0 +1,8 @@
+Qingjian English Glossary (英语释义表), version 1.0.0
+Author: 青简 (https://qingjian.app)
+Source: https://github.com/qingjian-team/qingjian-dicts/tree/dadc628f9de9c009bd5cdcf67c334f4a3fae9ed2/official/glossary/en
+License: Creative Commons Attribution-ShareAlike 4.0 International
+https://creativecommons.org/licenses/by-sa/4.0/
+
+The TSV is redistributed unchanged with its original header. WA 五笔 displays
+the first available translation field per Chinese word.

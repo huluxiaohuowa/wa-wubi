@@ -9,6 +9,7 @@ struct CandidateStrip: View {
     let page: Int
     let pages: Int
     let preferences: Preferences
+    var translations: [String]?
     var availableWidth: CGFloat = .infinity
     var forceVertical = false
     var choose: ((Int) -> Void)?
@@ -47,7 +48,8 @@ struct CandidateStrip: View {
 
     private func strip(vertical: Bool) -> some View {
         let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 3)) :
-            AnyLayout(HStackLayout(alignment: .center, spacing: 3))
+            AnyLayout(HStackLayout(alignment: translations == nil ? .center : .firstTextBaseline, spacing: 3))
+        let showsCodes = candidates.contains { !$0.hint.isEmpty }
         return layout {
             Text(code)
                 .font(.system(size: max(12, preferences.fontSize - 5), weight: .semibold, design: .monospaced))
@@ -63,16 +65,7 @@ struct CandidateStrip: View {
                     let button = Button {
                         if dragging == nil { choose?(index) }
                     } label: {
-                        HStack(spacing: 5) {
-                            Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
-                            Text(CandidateFont.label(candidates[index].word, size: preferences.fontSize))
-                                .lineLimit(vertical ? nil : 1)
-                                .fixedSize(horizontal: !vertical, vertical: true)
-                                .frame(maxWidth: vertical ? min(220, max(1, availableWidth - 70)) : nil)
-                            if !candidates[index].hint.isEmpty {
-                                Text(candidates[index].hint).font(.system(size: 10, design: .monospaced))
-                            }
-                        }
+                        candidateLabel(index, vertical: vertical, showsCodes: showsCodes)
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .foregroundStyle(index == current ? Color.black.opacity(0.86) : ink)
                         .background(index == current ? highlight : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -85,9 +78,13 @@ struct CandidateStrip: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(index + 1) \(candidates[index].word)")
+                    .accessibilityValue([candidates[index].hint, translation(at: index)]
+                        .filter { !$0.isEmpty }.joined(separator: "，"))
                     .contextMenu {
-                        if let pin { Button("移到首位") { pin(index) } }
-                        if let hide { Button("隐藏候选") { hide(index) } }
+                        if !candidates[index].isCloud {
+                            if let pin { Button("移到首位") { pin(index) } }
+                            if let hide { Button("隐藏候选") { hide(index) } }
+                        }
                     }
                     if movable.contains(index) {
                         button.background {
@@ -124,6 +121,57 @@ struct CandidateStrip: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(background.opacity(preferences.opacity))
                 .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(ink.opacity(0.18)) }
+        }
+    }
+
+    private func translation(at index: Int) -> String {
+        guard let translations, translations.indices.contains(index) else { return "" }
+        return translations[index]
+    }
+
+    private func candidateLabel(_ index: Int, vertical: Bool, showsCodes: Bool) -> some View {
+        let candidate = candidates[index]
+        let number = Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
+        let word = Text(CandidateFont.label(candidate.word, size: preferences.fontSize))
+        let code = Text(candidate.hint).font(.system(size: 10, design: .monospaced)).lineLimit(1)
+        let translation = translation(at: index)
+        let definition = Text(translation.isEmpty ? " " : translation)
+            .font(.system(size: max(11, preferences.fontSize * 0.58)))
+            .opacity(0.78)
+        return Group {
+            if vertical {
+                HStack(spacing: 8) {
+                    number.frame(width: 12, alignment: .leading)
+                    word
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: min(220, max(1, availableWidth - 242)), alignment: .leading)
+                        .layoutPriority(1)
+                    if showsCodes {
+                        code.frame(width: 40, alignment: .leading)
+                    }
+                    if translations != nil {
+                        definition
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(2)
+                            .frame(width: 128, alignment: .leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    number
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            word.lineLimit(1).fixedSize()
+                            if !candidate.hint.isEmpty { code }
+                        }
+                        if translations != nil {
+                            definition.lineLimit(1)
+                        }
+                    }
+                }
+            }
         }
     }
 

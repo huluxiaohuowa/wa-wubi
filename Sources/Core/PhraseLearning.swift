@@ -64,3 +64,39 @@ public struct PhraseLearning {
         return nil
     }
 }
+
+public struct ContinuousPhraseLearning {
+    private var words: [String] = []
+    private var lastCommit: Date?
+
+    public init() {}
+
+    public mutating func reset() { self = Self() }
+
+    public mutating func record(_ result: Composition.Result, lexicon: Lexicon, maxLength: Int,
+                                now: Date = Date()) -> [Entry] {
+        if !result.handled { reset(); return [] }
+        if result.text.isEmpty { return [] }
+        let committed = result.selections.map(\.word)
+        guard !committed.isEmpty, committed.joined() == result.text else { reset(); return [] }
+        if let lastCommit, now.timeIntervalSince(lastCommit) > 20 { reset() }
+        lastCommit = now
+        let limit = min(10, max(2, maxLength))
+        var learned: [Entry] = []
+        for word in committed {
+            guard word.count < limit, word.unicodeScalars.allSatisfy({ $0.properties.isIdeographic }) else {
+                words.removeAll()
+                continue
+            }
+            words.append(word)
+            while words.reduce(0, { $0 + $1.count }) > limit { words.removeFirst() }
+            for start in words.indices.dropLast() {
+                let phrase = words[start...].joined()
+                if let code = lexicon.fullCode(for: phrase), code.count == 4 {
+                    learned.append(Entry(phrase, code))
+                }
+            }
+        }
+        return learned
+    }
+}

@@ -134,7 +134,9 @@ final class LibraryStore: ObservableObject {
         }
         if preferences.mixedPinyin {
             let known = Set(words.map(\.word))
-            words += pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+            words += pinyin[code, default: []]
+                .filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+                .map { Candidate($0.word, hint: $0.hint, source: .pinyin) }
         }
         return lexicon.applyingManualOrder(manualOrders[code, default: []], to: words, code: code)
     }
@@ -211,17 +213,22 @@ final class LibraryStore: ObservableObject {
         edit(code, word, pinned: true)
     }
 
-    func addLearnedPhrase(_ entry: Entry) {
-        let key = "personal/\(entry.code)/\(entry.word)"
-        guard preferredImportCodes[entry.word] == nil, lexicon.existingCode(for: entry.word) == nil,
-              snapshot.values[key] == nil, edits[entry.code]?[entry.word]?.hidden != true else { return }
-        set(key, entry)
-        preferredImportCodes[entry.word] = entry.code
-        extras[entry.code, default: []].append(entry)
+    func addLearnedPhrases(_ entries: [Entry]) {
+        var added: [Entry] = []
+        for entry in entries {
+            let key = "personal/\(entry.code)/\(entry.word)"
+            guard preferredImportCodes[entry.word] == nil, lexicon.existingCode(for: entry.word) == nil,
+                  snapshot.values[key] == nil, edits[entry.code]?[entry.word]?.hidden != true else { continue }
+            set(key, entry)
+            preferredImportCodes[entry.word] = entry.code
+            extras[entry.code, default: []].append(entry)
+            added.append(entry)
+        }
+        guard !added.isEmpty else { return }
         if let index = groups.firstIndex(where: { $0.id == "personal" }) {
-            groups[index].entries.append(entry)
+            groups[index].entries += added
         } else {
-            groups.insert(WordGroup(id: "personal", name: "用户词库", entries: [entry]), at: 0)
+            groups.insert(WordGroup(id: "personal", name: "用户词库", entries: added), at: 0)
         }
         persistInBackground()
     }

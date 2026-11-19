@@ -39,6 +39,8 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var appRules: [String: AppLanguageRule] = [:]
     public var automaticallyRanks = true
     public var learnsPhrases: Bool?
+    public var learnsContinuousPhrases: Bool?
+    public var continuousPhraseLength: Int?
     public var rankingRange = RankingRange.ordinary
     public var candidateCount = 9
     public var showContinuations = true
@@ -136,7 +138,7 @@ public struct Composition {
     }
 
     public mutating func toggleEnglish() -> Result {
-        let result = active ? accept(index: selected) : Result()
+        let result = active ? accept(index: selected, allowCloud: false) : Result()
         english.toggle()
         return result
     }
@@ -145,7 +147,7 @@ public struct Composition {
         let result: Result
         if active {
             page = 0
-            result = accept(index: 0, raw: !selectsCandidate)
+            result = accept(index: 0, raw: !selectsCandidate, allowCloud: false)
         } else {
             result = Result()
         }
@@ -153,12 +155,16 @@ public struct Composition {
         return result
     }
 
-    public mutating func accept(index: Int, raw: Bool = false, fallback: Bool = true) -> Result {
+    public mutating func accept(index: Int, raw: Bool = false, fallback: Bool = true, allowCloud: Bool = true) -> Result {
         let list = visible
-        let selected = !raw && list.indices.contains(index) ? list[index] : nil
+        var selected = !raw && list.indices.contains(index) ? list[index] : nil
+        if !allowCloud && selected?.isCloud == true {
+            selected = candidates.first { !$0.isCloud }
+        }
         let value = selected?.word ?? (fallback ? code : "")
         if !fallback && value.isEmpty { return Result() }
-        let selections: [Selection] = mode == .wubi && selected != nil ? [Selection(code: code, word: value)] : []
+        let selections: [Selection] = mode == .wubi && selected != nil && selected?.source == nil
+            ? [Selection(code: code, word: value)] : []
         reset()
         if !value.isEmpty { last = value }
         return Result(true, value, selections: selections)
@@ -265,7 +271,7 @@ public struct Composition {
                     return Result()
                 }
                 guard preferences.fifthKeyCommits else { return Result() }
-                prefix = accept(index: 0)
+                prefix = accept(index: 0, allowCloud: false)
             }
             guard code.count < 32 else { return Result() }
             code.append(letter)
@@ -337,7 +343,7 @@ public struct Composition {
     }
 
     private mutating func punctuate(_ character: Character, preferences: Preferences) -> Result {
-        let prefix = active ? accept(index: selected) : Result()
+        let prefix = active ? accept(index: selected, allowCloud: false) : Result()
         guard let mark = punctuationMark(character, preferences: preferences) else {
             return Result(false, prefix.text, selections: prefix.selections)
         }

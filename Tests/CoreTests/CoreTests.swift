@@ -67,6 +67,53 @@ final class CoreTests: XCTestCase {
         }
     }
 
+    func testContinuousPhraseLearningUsesFullCodesAndWholeCommittedWords() {
+        let words = Lexicon([
+            Entry("甲", "aabc"), Entry("乙", "bbcd"), Entry("丙", "ccde"),
+            Entry("丁", "ddef"), Entry("戊", "eefg")
+        ])
+        var learning = ContinuousPhraseLearning()
+        func commit(_ text: String, maxLength: Int = 4) -> [Entry] {
+            let selection = Composition.Selection(code: "z", word: text)
+            return learning.record(.init(true, text, selections: [selection]), lexicon: words, maxLength: maxLength)
+        }
+        XCTAssertEqual(commit("甲乙"), [])
+        XCTAssertEqual(commit("丙"), [Entry("甲乙丙", "abcc")])
+        XCTAssertEqual(commit("丁"), [Entry("甲乙丙丁", "abcd"), Entry("丙丁", "ccdd")])
+        XCTAssertEqual(commit("戊"), [Entry("丙丁戊", "cdee"), Entry("丁戊", "ddee")])
+
+        _ = learning.record(.init(true, "，"), lexicon: words, maxLength: 4)
+        XCTAssertEqual(commit("甲"), [])
+        _ = learning.record(.init(false), lexicon: words, maxLength: 4)
+        XCTAssertEqual(commit("乙"), [])
+        XCTAssertEqual(commit("丙", maxLength: 2), [Entry("乙丙", "bbcc")])
+    }
+
+    func testMixedPinyinAndCloudSelectionsDoNotSupplyWubiLearning() throws {
+        var state = Composition()
+        let pinyin = Candidate("开", hint: "ga", source: .pinyin)
+        let oldOrderItem = try JSONDecoder().decode(Candidate.self, from: Data(#"{"word":"开","hint":"ga"}"#.utf8))
+        XCTAssertEqual(oldOrderItem, pinyin)
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, _ in
+            [Candidate("开发"), pinyin, Candidate("开发计划", hint: "云联想", source: .cloud)]
+        }
+        let prefs = Preferences()
+        _ = state.handle(.letter("g"), preferences: prefs, lookup: lookup)
+        let pinyinResult = state.handle(.number(2), preferences: prefs, lookup: lookup)
+        XCTAssertEqual(pinyinResult.text, "开")
+        XCTAssertTrue(pinyinResult.selections.isEmpty)
+
+        _ = state.handle(.letter("g"), preferences: prefs, lookup: lookup)
+        let cloudResult = state.handle(.number(3), preferences: prefs, lookup: lookup)
+        XCTAssertEqual(cloudResult.text, "开发计划")
+        XCTAssertTrue(cloudResult.selections.isEmpty)
+
+        _ = state.handle(.letter("g"), preferences: prefs, lookup: lookup)
+        _ = state.handle(.forward, preferences: prefs, lookup: lookup)
+        _ = state.handle(.forward, preferences: prefs, lookup: lookup)
+        XCTAssertEqual(state.handle(.punctuation("，"), preferences: prefs, lookup: lookup).text, "开发")
+    }
+
     func testInputSchemesKeepPinyinActiveBetweenWords() {
         var settings = Preferences()
         settings.mixedPinyin = true

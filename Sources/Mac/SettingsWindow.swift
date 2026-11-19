@@ -6,6 +6,7 @@ import WubiCore
 
 enum SettingsPage: String, CaseIterable, Identifiable {
     case appearance = "外观", input = "输入", lexicon = "词库", cloud = "同步", speech = "语音", punctuation = "标点", applications = "应用规则", updates = "更新", about = "关于"
+    case prediction = "云联想"
     var id: Self { self }
     var symbol: String {
         switch self {
@@ -13,6 +14,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .input: return "keyboard"
         case .lexicon: return "books.vertical"
         case .cloud: return "icloud"
+        case .prediction: return "cloud"
         case .speech: return "waveform"
         case .punctuation: return "number"
         case .applications: return "square.grid.2x2"
@@ -54,6 +56,7 @@ final class SettingsWindow: ObservableObject {
 struct SettingsView: View {
     @ObservedObject var model: SettingsWindow
     @State private var themeMessage = ""
+    @AppStorage(LanguageLearning.enabledKey) private var languageLearningEnabled = LanguageLearning.isEnabled
     @ObservedObject private var store = LibraryStore.shared
     @StateObject private var catalog = DictionaryCatalog(store: .shared)
     private let accent = Color(red: 0.24, green: 0.55, blue: 0.44)
@@ -93,6 +96,7 @@ struct SettingsView: View {
                     case .input: input
                     case .lexicon: LexiconSettings(model: model, store: store, catalog: catalog)
                     case .cloud: cloud
+                    case .prediction: CloudPredictionSettings()
                     case .speech: SpeechSettings(store: store)
                     case .punctuation: PunctuationSettings(store: store)
                     case .applications: ApplicationSettings(store: store)
@@ -152,6 +156,9 @@ struct SettingsView: View {
                 Text("横排").tag(false)
                 Text("竖排").tag(true)
             }.pickerStyle(.segmented)
+            Toggle("语言学习 · 显示候选译词", isOn: $languageLearningEnabled)
+            Text("内置离线英语释义。可在「云联想」中设置云端补充或其他目标语言。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -195,7 +202,8 @@ struct SettingsView: View {
 
     private var preview: some View {
         CandidateStrip(code: "g", candidates: [Candidate("一"), Candidate("王"), Candidate("表", hint: "e")],
-                       current: 1, page: 0, pages: 1, preferences: store.preferences)
+                       current: 1, page: 0, pages: 1, preferences: store.preferences,
+                       translations: languageLearningEnabled ? ["one", "king", "table"] : nil)
     }
 
     private var input: some View {
@@ -234,6 +242,21 @@ struct SettingsView: View {
             Toggle("启用 z 键功能", isOn: pref(\.zFunction))
             Toggle("在光标旁提示中英及简繁切换", isOn: pref(\.modeHints))
             Toggle("输简出繁", isOn: pref(\.traditional))
+            Divider()
+            Toggle("自动学习五笔新词", isOn: Binding(
+                get: { store.preferences.learnsContinuousPhrases ?? false },
+                set: { value in store.update { $0.learnsContinuousPhrases = value } }
+            ))
+            .disabled(store.preferences.singleCharacters)
+            Picker("自动组词最大词长", selection: Binding(
+                get: { min(10, max(2, store.preferences.continuousPhraseLength ?? 4)) },
+                set: { value in store.update { $0.continuousPhraseLength = value } }
+            )) {
+                ForEach(2...10, id: \.self) { Text("\($0) 字").tag($0) }
+            }
+            .disabled(store.preferences.learnsContinuousPhrases != true || store.preferences.singleCharacters)
+            Text("连续上屏的五笔字词会按 86 五笔规则合成词码，并加入用户词库。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

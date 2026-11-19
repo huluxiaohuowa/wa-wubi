@@ -12,6 +12,8 @@ final class InputController: IMKInputController {
     private let speech = SpeechCapture()
     private var state = Composition()
     private var phraseLearning = PhraseLearning()
+    private var continuousLearning = ContinuousPhraseLearning()
+    private var learningCaret: NSRange?
     private var shiftPressed = false
     private var pinyinRefreshPending = false
     private var boundLanguage = false
@@ -23,8 +25,25 @@ final class InputController: IMKInputController {
     private var statusText: String?
     private var statusClear: DispatchWorkItem?
     private var observation: NSObjectProtocol?
+    private var cloudObservation: NSObjectProtocol?
+    private var predictionTask: Task<Void, Never>?
+    private var glossTask: Task<Void, Never>?
+    private var cloudSuggestions: [Candidate] = []
+    private var glossRequest: [String] = []
+    private var glosses: [String: String] = [:]
+    private var precedingText = ""
     private let replacement = NSRange(location: NSNotFound, length: NSNotFound)
-    private var lookup: (Composition.Mode, String) -> [Candidate] { store.candidates }
+    private var lookup: (Composition.Mode, String) -> [Candidate] {
+        let mode = state.mode
+        let code = state.code
+        let suggestions = cloudSuggestions
+        return { [store] requestedMode, requestedCode in
+            let local = store.candidates(requestedMode, requestedCode)
+            guard requestedMode == mode, requestedCode == code, !suggestions.isEmpty else { return local }
+            let words = Set(local.map(\.word))
+            return local + suggestions.filter { !words.contains($0.word) }
+        }
+    }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         Int(NSEvent.EventTypeMask([.keyDown, .keyUp, .flagsChanged]).rawValue)
@@ -33,6 +52,8 @@ final class InputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         Self.activeController = self
         phraseLearning.reset()
+        resetContinuousLearning()
+        precedingText = ""
         let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         consumedKeyDowns.removeAll()
@@ -45,16 +66,28 @@ final class InputController: IMKInputController {
         if observation == nil {
             observation = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-            ) { [weak self] _ in self?.stopSpeech() }
+            ) { [weak self] _ in
+                self?.stopSpeech()
+                self?.invalidateCloudContext()
+                self?.resetContinuousLearning()
+            }
+        }
+        if cloudObservation == nil {
+            cloudObservation = NotificationCenter.default.addObserver(
+                forName: CloudPredictionConfiguration.didChange, object: nil, queue: .main
+            ) { [weak self] _ in self?.invalidateCloudContext() }
         }
     }
 
     override func deactivateServer(_ sender: Any!) {
         stopSpeech()
+        clearCloud()
+        precedingText = ""
         phraseLearning.reset()
+        resetContinuousLearning()
         shiftPressed = false
         if let target = sender as? IMKTextInput {
-            if state.active { apply(state.accept(index: state.selected), to: target) }
+            if state.active { apply(state.accept(index: state.selected, allowCloud: false), to: target) }
             setCompositionMark(false, in: target)
         }
         compositionMarked = false
@@ -64,13 +97,17 @@ final class InputController: IMKInputController {
         if Self.activeController === self { Self.activeController = nil }
         if let observation { NSWorkspace.shared.notificationCenter.removeObserver(observation) }
         observation = nil
+        if let cloudObservation { NotificationCenter.default.removeObserver(cloudObservation) }
+        cloudObservation = nil
         super.deactivateServer(sender)
     }
 
     override func commitComposition(_ sender: Any!) {
         guard let target = sender as? IMKTextInput, state.active else { return }
         phraseLearning.reset()
-        apply(state.accept(index: state.selected), to: target)
+        resetContinuousLearning()
+        apply(state.accept(index: state.selected, allowCloud: false), to: target)
+        clearCloud()
         setCompositionMark(false, in: target)
         CandidatePanel.shared.hide(for: self)
     }
@@ -81,11 +118,15 @@ final class InputController: IMKInputController {
         if Self.activeController == nil { Self.activeController = self }
         if IsSecureEventInputEnabled() {
             phraseLearning.reset()
+            resetContinuousLearning()
+            clearCloud()
+            precedingText = ""
             if state.active { state.reset() }
             setCompositionMark(false, in: target)
             consumedKeyDowns.removeAll()
             shiftPressed = false
             stopSpeech()
+            CandidatePanel.shared.hide(for: self)
             return false
         }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
@@ -105,7 +146,11 @@ final class InputController: IMKInputController {
     private func handleKeyDown(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         shiftPressed = false
         if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
-        if !flags.intersection([.control, .option, .command, .function]).isEmpty { phraseLearning.reset() }
+        if !flags.intersection([.control, .option, .command, .function]).isEmpty {
+            phraseLearning.reset()
+            resetContinuousLearning()
+            invalidateCloudContext()
+        }
         if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
         if !state.english, store.preferences.inputScheme != .wubi || (event.keyCode == 50 && !state.active) {
@@ -113,10 +158,18 @@ final class InputController: IMKInputController {
         }
         guard let key = key(for: event) else {
             phraseLearning.reset()
-            if state.active { apply(state.accept(index: state.selected), to: target); draw(target) }
+            resetContinuousLearning()
+            if state.active { apply(state.accept(index: state.selected, allowCloud: false), to: target); draw(target) }
+            invalidateCloudContext()
             return false
         }
         if store.loading && !state.english { return false }
+        if key == .backspace || key == .escape || state.english ||
+            (!state.active && learningCaret.map { $0 != target.selectedRange() } == true) {
+            resetContinuousLearning()
+        }
+        let oldCode = state.code
+        let oldMode = state.mode
         let previous = store.preferences.learnsPhrases == true && !store.preferences.singleCharacters ? state : nil
         let result: Composition.Result
         if store.preferences.zFunction, state.code == "z", key == .space, !state.last.isEmpty {
@@ -129,8 +182,117 @@ final class InputController: IMKInputController {
         apply(result, to: target)
         if let previous { phraseLearning.handle(key, from: previous, to: state) }
         recordLearnedPhrase(result)
+        recordContinuousPhrases(result, at: target)
+        let changedComposition = state.code != oldCode || state.mode != oldMode
+        if changedComposition { clearCloud() }
+        if !result.handled || state.english { precedingText = "" }
         draw(target)
+        if changedComposition { schedulePrediction(at: target) }
         return result.handled
+    }
+
+    private func clearCloud() {
+        predictionTask?.cancel()
+        predictionTask = nil
+        glossTask?.cancel()
+        glossTask = nil
+        cloudSuggestions = []
+        glossRequest = []
+        glosses = [:]
+    }
+
+    private func invalidateCloudContext() {
+        let hadSuggestions = !cloudSuggestions.isEmpty
+        clearCloud()
+        precedingText = ""
+        if hadSuggestions { state.refresh(store.candidates) }
+        if state.active, !IsSecureEventInputEnabled(), let target = client() { draw(target, requestGlosses: false) }
+    }
+
+    private func schedulePrediction(at target: IMKTextInput) {
+        let config = CloudPredictionConfiguration.current
+        guard config.enabled, !state.english, state.mode != .english,
+              (2...32).contains(state.code.count),
+              state.code.utf8.allSatisfy({ (97...122).contains($0) }),
+              target.bundleIdentifier() != Bundle.main.bundleIdentifier,
+              !IsSecureEventInputEnabled() else { return }
+        let code = state.code
+        let mode = state.mode
+        let pinyin = mode == .pinyin || (store.preferences.mixedPinyin && code.count > 4) ? code : nil
+        let seeds = localChineseWords(state.candidates, exactOnly: pinyin == nil, limit: 5)
+        guard pinyin != nil || !seeds.isEmpty else { return }
+        let input = CloudPrediction.Input(pinyin: pinyin, candidates: seeds, precedingText: precedingText)
+        let selection = target.selectedRange()
+        predictionTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 650_000_000)
+                guard let self, self.canShowCloud(at: target, selection: selection, config: config),
+                      self.state.code == code, self.state.mode == mode else { return }
+                let suggestions = try await CloudPrediction.suggestions(input, config: config)
+                guard !Task.isCancelled, self.canShowCloud(at: target, selection: selection, config: config),
+                      self.state.code == code, self.state.mode == mode else { return }
+                self.cloudSuggestions = suggestions.map { Candidate($0, hint: "云联想", source: .cloud) }
+                self.state.refresh(self.lookup)
+                self.draw(target)
+            } catch {
+                // Local candidates stay available if the service is unavailable.
+            }
+        }
+    }
+
+    private func scheduleGlosses(at target: IMKTextInput) {
+        let config = CloudPredictionConfiguration.current
+        guard LanguageLearning.isEnabled,
+              target.bundleIdentifier() != Bundle.main.bundleIdentifier, !IsSecureEventInputEnabled() else { return }
+        let words = localChineseWords(state.visible, exactOnly: false, limit: state.pageSize)
+        guard words != glossRequest else { return }
+        glossTask?.cancel()
+        glossRequest = words
+        glosses = [:]
+        guard !words.isEmpty else { return }
+        let selection = target.selectedRange()
+        let usesCloud = config.enabled && config.showsGlosses == true
+        let language = usesCloud ? config.translationLanguage : "英语"
+        glossTask = Task { @MainActor [weak self] in
+            let offline = await LanguageLearning.offlineTranslations(for: words, language: language)
+            guard let self, !Task.isCancelled, LanguageLearning.isEnabled,
+                  self.canShowCloud(at: target, selection: selection, config: config),
+                  self.glossRequest == words else { return }
+            if !offline.isEmpty {
+                self.glosses = offline
+                self.draw(target, requestGlosses: false)
+            }
+            let missing = words.filter { offline[$0] == nil }
+            guard usesCloud, !missing.isEmpty else { return }
+            do {
+                try await Task.sleep(nanoseconds: 650_000_000)
+                guard LanguageLearning.isEnabled, self.canShowCloud(at: target, selection: selection, config: config) else { return }
+                let translations = try await CloudPrediction.glosses(missing, config: config)
+                guard !Task.isCancelled, LanguageLearning.isEnabled,
+                      self.canShowCloud(at: target, selection: selection, config: config),
+                      self.glossRequest == words else { return }
+                self.glosses.merge(translations) { local, _ in local }
+                self.draw(target, requestGlosses: false)
+            } catch {
+                // A failed translation leaves the original candidate labels visible.
+            }
+        }
+    }
+
+    private func canShowCloud(at target: IMKTextInput, selection: NSRange, config: CloudPredictionConfiguration) -> Bool {
+        Self.activeController === self && state.active && !state.english && !speaking &&
+            !IsSecureEventInputEnabled() && target.selectedRange() == selection &&
+            CloudPredictionConfiguration.current == config
+    }
+
+    private func localChineseWords(_ candidates: [Candidate], exactOnly: Bool, limit: Int) -> [String] {
+        var seen = Set<String>()
+        return Array(candidates.lazy.filter {
+            !$0.isCloud && (!exactOnly || $0.hint.isEmpty) &&
+                (1...24).contains($0.word.count) &&
+                $0.word.unicodeScalars.contains { $0.properties.isIdeographic } &&
+                seen.insert($0.word).inserted
+        }.prefix(limit).map(\.word))
     }
 
     private func warmPinyin() {
@@ -150,7 +312,29 @@ final class InputController: IMKInputController {
             phraseLearning.reset()
             return
         }
-        if let entry = phraseLearning.record(result, lexicon: store.lexicon) { store.addLearnedPhrase(entry) }
+        if let entry = phraseLearning.record(result, lexicon: store.lexicon) { store.addLearnedPhrases([entry]) }
+    }
+
+    private func resetContinuousLearning() {
+        continuousLearning.reset()
+        learningCaret = nil
+    }
+
+    private func recordContinuousPhrases(_ result: Composition.Result, at target: IMKTextInput) {
+        guard store.preferences.learnsContinuousPhrases == true, !store.preferences.singleCharacters,
+              state.mode == .wubi, !state.english, !IsSecureEventInputEnabled() else {
+            resetContinuousLearning()
+            return
+        }
+        let learned = continuousLearning.record(result, lexicon: store.lexicon,
+                                                maxLength: store.preferences.continuousPhraseLength ?? 4)
+        if !result.handled || (!result.text.isEmpty && result.selections.map(\.word).joined() != result.text) {
+            learningCaret = nil
+        } else if !result.text.isEmpty {
+            let range = target.selectedRange()
+            learningCaret = range.location == NSNotFound ? nil : range
+        }
+        store.addLearnedPhrases(learned)
     }
 
     private func handleSpeechShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
@@ -197,6 +381,8 @@ final class InputController: IMKInputController {
         defer { shiftPressed = false }
         if flags.isEmpty && shiftPressed {
             phraseLearning.reset()
+            resetContinuousLearning()
+            invalidateCloudContext()
             apply(state.shiftToggleEnglish(selectsCandidate: store.preferences.shiftSelectsCandidate ?? true), to: target)
             if !boundLanguage { Self.english = state.english }
             if store.preferences.modeHints { notify(state.english ? "A · 英文" : "五 · 中文", at: target) }
@@ -207,7 +393,9 @@ final class InputController: IMKInputController {
 
     private func startSpeech(_ target: IMKTextInput) {
         phraseLearning.reset()
-        if state.active { apply(state.accept(index: state.selected), to: target) }
+        resetContinuousLearning()
+        if state.active { apply(state.accept(index: state.selected, allowCloud: false), to: target) }
+        invalidateCloudContext()
         speaking = true
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let origin = caret(target)
@@ -350,8 +538,10 @@ final class InputController: IMKInputController {
     }
 
     private func edit(_ index: Int, target: IMKTextInput, hide: Bool) {
-        guard state.mode == .wubi, state.visible.indices.contains(index) else { return }
+        guard state.mode == .wubi, state.visible.indices.contains(index), !state.visible[index].isCloud else { return }
         store.edit(state.code, state.visible[index].word, pinned: !hide, hidden: hide)
+        resetContinuousLearning()
+        clearCloud()
         state.refresh(lookup)
         draw(target)
     }
@@ -359,6 +549,7 @@ final class InputController: IMKInputController {
     private func moveCandidate(from source: Int, to destination: Int, target: IMKTextInput) {
         guard Self.activeController === self, state.mode == .wubi else { return }
         let offset = state.page * state.pageSize
+        guard state.visible.indices.contains(source), state.visible.indices.contains(destination) else { return }
         guard let order = store.lexicon.manualOrder(in: state.candidates, code: state.code,
                                                    moving: offset + source, to: offset + destination) else { return }
         store.saveCandidateOrder(order, for: state.code)
@@ -373,6 +564,9 @@ final class InputController: IMKInputController {
         compositionMarked = false
         target.insertText(value, replacementRange: replacement)
         store.record(result.selections)
+        if CloudPredictionConfiguration.current.enabled {
+            precedingText = String((precedingText + value).suffix(80))
+        }
     }
 
     private func setCompositionMark(_ active: Bool, in target: IMKTextInput) {
@@ -402,11 +596,12 @@ final class InputController: IMKInputController {
         return CGRect(x: rect.minX, y: rect.minY, width: max(1, rect.width), height: rect.height)
     }
 
-    private func draw(_ target: IMKTextInput) {
+    private func draw(_ target: IMKTextInput, requestGlosses: Bool = true) {
         guard Self.activeController === self else { return }
         setCompositionMark(state.active, in: target)
         let label: String
         let candidates: [Candidate]
+        var translations: [String]?
         if let statusText {
             label = statusText
             candidates = []
@@ -416,10 +611,14 @@ final class InputController: IMKInputController {
             case .english: label = "A · " + state.code
             case .pinyin: label = "拼 · " + state.code
             }
+            if LanguageLearning.isEnabled, state.mode != .english {
+                translations = state.visible.map { glosses[$0.word] ?? "" }
+            }
             candidates = state.visible.map { candidate in
-                guard store.preferences.traditional else { return candidate }
-                return Candidate(candidate.word.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? candidate.word,
-                                 hint: candidate.hint)
+                let word = store.preferences.traditional
+                    ? candidate.word.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? candidate.word
+                    : candidate.word
+                return Candidate(word, hint: candidate.hint, source: candidate.source)
             }
         } else {
             CandidatePanel.shared.hide(for: self)
@@ -431,11 +630,14 @@ final class InputController: IMKInputController {
         }) : []
         let view = CandidateStrip(code: label, candidates: candidates, current: state.selected,
                                   page: state.page, pages: state.pageCount, preferences: store.preferences,
+                                  translations: translations,
                                   choose: { [weak self] index in
-            guard let self, Self.activeController === self else { return }
+            guard let self, Self.activeController === self, !IsSecureEventInputEnabled() else { return }
             let result = self.state.accept(index: index, fallback: false)
             self.apply(result, to: target)
             self.recordLearnedPhrase(result)
+            self.recordContinuousPhrases(result, at: target)
+            self.clearCloud()
             self.draw(target)
         }, pin: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: false) } : nil,
            hide: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: true) } : nil,
@@ -447,6 +649,7 @@ final class InputController: IMKInputController {
             self?.moveCandidate(from: source, to: destination, target: target)
         })
         CandidatePanel.shared.render(view, at: caret(target), for: self)
+        if requestGlosses, statusText == nil, state.mode != .english { scheduleGlosses(at: target) }
     }
 
     override func menu() -> NSMenu! {
@@ -471,6 +674,11 @@ final class InputController: IMKInputController {
         add("输简出繁", #selector(toggleTraditional(_:)), key: "t", modifiers: [.control, .option],
             checked: store.preferences.traditional)
         add(state.english ? "切换到中文" : "切换到英文", #selector(toggleLanguage(_:)))
+        if CloudPredictionConfiguration.current.enabled {
+            menu.addItem(.separator())
+            add("问字…", #selector(askCloudCharacter(_:)))
+            add("翻译选中文字…", #selector(translateSelection(_:)))
+        }
         menu.addItem(.separator())
         add("检查更新…", #selector(checkUpdates(_:)))
         add("关于 WA 五笔", #selector(openAbout(_:)))
@@ -485,8 +693,10 @@ final class InputController: IMKInputController {
     private func changeScheme(to scheme: InputScheme) {
         guard store.preferences.inputScheme != scheme || state.english else { return }
         if state.english { toggleLanguage(nil) }
-        if let target = client(), state.active { apply(state.accept(index: state.selected), to: target) }
+        if let target = client(), state.active { apply(state.accept(index: state.selected, allowCloud: false), to: target) }
         state.reset()
+        resetContinuousLearning()
+        invalidateCloudContext()
         store.update { $0.inputScheme = scheme }
         if let target = client() {
             if store.preferences.modeHints { notify(scheme.title, at: target) }
@@ -516,8 +726,73 @@ final class InputController: IMKInputController {
     @objc private func openGuide(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://wa-wubi.fuluwa.top/")!)
     }
+    @objc private func askCloudCharacter(_ sender: Any?) {
+        guard CloudPredictionConfiguration.current.enabled, !IsSecureEventInputEnabled() else { return }
+        let alert = NSAlert()
+        alert.messageText = "问字"
+        alert.informativeText = "输入字形、部件或读音，例如「三个木组成什么字」。"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        alert.accessoryView = input
+        alert.addButton(withTitle: "查询")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = input
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let question = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return }
+        requestCloudAnswer(title: "问字", input: String(question.prefix(200)),
+                           instruction: "根据用户描述回答可能的汉字，简明说明读音、字义和组成。")
+    }
+
+    @objc private func translateSelection(_ sender: Any?) {
+        let config = CloudPredictionConfiguration.current
+        guard config.enabled, !IsSecureEventInputEnabled(), let target = client() else { return }
+        let range = target.selectedRange()
+        guard range.location != NSNotFound, (1...1500).contains(range.length),
+              let text = target.attributedSubstring(from: range)?.string, !text.isEmpty else {
+            Self.showCloudAnswer(title: "翻译选中文字", text: "请选中 1–1500 个字符后再试。")
+            return
+        }
+        requestCloudAnswer(title: "翻译", input: String(text.prefix(1500)),
+                           instruction: "将用户给出的文本翻译成\(config.translationLanguage)。只返回译文。")
+    }
+
+    private func requestCloudAnswer(title: String, input: String, instruction: String) {
+        let config = CloudPredictionConfiguration.current
+        guard config.enabled, !IsSecureEventInputEnabled() else { return }
+        Task { @MainActor in
+            do {
+                let result = try await CloudPrediction.complete(instruction: instruction, input: input, config: config)
+                guard CloudPredictionConfiguration.current == config, !IsSecureEventInputEnabled() else { return }
+                Self.showCloudAnswer(title: title, text: result)
+            } catch {
+                guard CloudPredictionConfiguration.current == config, !IsSecureEventInputEnabled() else { return }
+                Self.showCloudAnswer(title: title, text: error.localizedDescription)
+            }
+        }
+    }
+
+    private static func showCloudAnswer(title: String, text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame.size = NSSize(width: 360, height: 140)
+        if let content = scroll.documentView as? NSTextView {
+            content.isEditable = false
+            content.isSelectable = true
+            content.string = text
+            content.font = .systemFont(ofSize: 14)
+        }
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "关闭")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
     @objc private func toggleLanguage(_ sender: Any?) {
+        resetContinuousLearning()
         let result = state.toggleEnglish()
+        invalidateCloudContext()
         if !boundLanguage { Self.english = state.english }
         if let target = client() {
             apply(result, to: target)

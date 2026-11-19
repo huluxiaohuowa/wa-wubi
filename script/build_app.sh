@@ -12,6 +12,8 @@ if [[ -n "${WAWUBI_VERSION:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $WAWUBI_VERSION" "$app/Contents/Info.plist"
 fi
 /usr/bin/unzip -oq Resources/WAWubiHan.zip -d "$app/Contents/Resources"
+/usr/bin/unzip -oq Resources/QingjianEnglishGlossary.zip -d "$app/Contents/Resources"
+cp Resources/QingjianEnglishGlossary-NOTICE.txt "$app/Contents/Resources/"
 cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Resources/"
 cp Resources/{InputIcon.png,InputIcon@2x.png,BrandIcon.png,AppIcon.icns} "$app/Contents/Resources/"
 cp -R Resources/zh-Hans.lproj Resources/en.lproj "$app/Contents/Resources/"

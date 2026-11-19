@@ -17,12 +17,27 @@ public struct Entry: Hashable, Codable, Sendable {
 }
 
 public struct Candidate: Hashable, Codable, Sendable {
+    public enum Source: String, Codable, Sendable { case cloud, pinyin }
+
     public let word: String
     public let hint: String
+    public let source: Source?
+    public var isCloud: Bool { source == .cloud }
 
-    public init(_ word: String, hint: String = "") {
+    public init(_ word: String, hint: String = "", source: Source? = nil) {
         self.word = word
         self.hint = hint
+        self.source = source
+    }
+
+    // A saved candidate order identifies display entries independently of their lookup source.
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.word == rhs.word && lhs.hint == rhs.hint
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(word)
+        hasher.combine(hint)
     }
 }
 
@@ -174,7 +189,7 @@ public final class Lexicon: @unchecked Sendable {
     public func isFixedWord(_ word: String) -> Bool { fixedWords.contains(word) }
 
     public func canMoveCandidate(_ candidate: Candidate, at index: Int, code: String) -> Bool {
-        index >= Self.protectedShortcutCount(for: code) && !isFixedWord(candidate.word)
+        !candidate.isCloud && index >= Self.protectedShortcutCount(for: code) && !isFixedWord(candidate.word)
     }
 
     public func manualOrder(in candidates: [Candidate], code: String, moving source: Int, to target: Int) -> [Candidate]? {
