@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { nextIOSVersion } from "./ios_version.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const appStore = path.join(root, "Mobile/AppStore");
@@ -65,7 +66,29 @@ function validateMaterials() {
 }
 
 function loadCredentials() {
-  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const config = process.env.GITHUB_ACTIONS === "true" ? {
+    common: {
+      teamId: process.env.WAWUBI_IOS_TEAM_ID,
+      appStoreConnect: {
+        keyId: process.env.WAWUBI_IOS_ASC_KEY_ID,
+        issuerId: process.env.WAWUBI_IOS_ASC_ISSUER_ID,
+        privateKeyBase64: process.env.WAWUBI_IOS_ASC_KEY_P8
+      },
+      certificates: {
+        appleDistribution: {
+          p12Base64: process.env.WAWUBI_IOS_DISTRIBUTION_P12,
+          password: process.env.WAWUBI_IOS_DISTRIBUTION_PASSWORD
+        }
+      }
+    },
+    "wa-wubi": { provisioningProfiles: {
+      iosBase64: process.env.WAWUBI_IOS_APP_PROFILE,
+      iosKeyboardBase64: process.env.WAWUBI_IOS_KEYBOARD_PROFILE
+    } }
+  } : JSON.parse(fs.readFileSync(configPath, "utf8"));
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("WAWUBI_IOS_") && key !== "WAWUBI_IOS_BUILD_DIR") delete process.env[key];
+  }
   const common = config.common;
   const key = common?.appStoreConnect;
   const distribution = common?.certificates?.appleDistribution;
@@ -103,37 +126,17 @@ function ascClient(key) {
 }
 
 const platform = { "filter[platform]": "IOS", limit: 200 };
-const parts = version => version.split(".").map(Number);
-function compare(a, b) {
-  const x = parts(a);
-  const y = parts(b);
-  return (x[0] - y[0]) || ((x[1] ?? 0) - (y[1] ?? 0)) || ((x[2] ?? 0) - (y[2] ?? 0));
-}
-
-async function chooseVersion(asc, appID, requestedVersion, lane) {
-  const editing = new Set(["PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY"]);
+async function chooseVersion(asc, appID, requestedVersion) {
   const [versions, trains] = await Promise.all([
     asc(`apps/${appID}/appStoreVersions`, platform), asc("preReleaseVersions", { ...platform, "filter[app]": appID })
   ]);
-  const newest = versions.sort((a, b) => compare(b.attributes.versionString, a.attributes.versionString))[0]?.attributes;
-  let version = requestedVersion;
-  if (!version && newest && editing.has(newest.appVersionState ?? newest.appStoreState)) version = newest.versionString;
-  if (!version && newest) {
-    const [major, minor = 0, patch = 0] = parts(newest.versionString);
-    version = `${major}.${minor}.${patch + 1}`;
-  }
-  version ??= "0.1.0";
-  if (!requestedVersion && lane === "testflight") {
-    const beta = trains.map(train => train.attributes.version).sort(compare).at(-1);
-    if (beta && compare(beta, version) > 0) version = beta;
-  }
-  if (!/^\d+\.\d+(\.\d+)?$/.test(version)) throw new Error("Invalid iOS version.");
-  const train = trains.find(item => item.attributes.version === version);
-  const builds = train ? await asc("builds", { "filter[app]": appID, "filter[preReleaseVersion]": train.id, limit: 200 }) : [];
-  const sequence = Math.max(0, ...builds.map(build => Number.parseInt(build.attributes.version, 10) || 0));
-  const localCounters = path.join(buildRoot, "build-numbers.json");
-  const counters = fs.existsSync(localCounters) ? JSON.parse(fs.readFileSync(localCounters, "utf8")) : {};
-  return { version, build: Math.max(sequence, counters[version] ?? 0) + 1, counters, localCounters };
+  const usedVersions = [
+    ...trains.map(item => item.attributes.version),
+    ...versions.map(item => item.attributes)
+      .filter(item => (item.appVersionState ?? item.appStoreState) !== "PREPARE_FOR_SUBMISSION")
+      .map(item => item.versionString)
+  ];
+  return nextIOSVersion(usedVersions, requestedVersion);
 }
 
 function validateProfile(target, profile, team, work, fingerprint) {
@@ -253,7 +256,7 @@ async function provision(asc, credentials, status, work) {
     saved.push({ target, profile });
   }
 
-  const folder = path.join(os.homedir(), "Library/Mobile Documents/com~apple~CloudDocs/backup/cert/wa-wubi/provisioningProfiles");
+  const folder = path.join(os.homedir(), "icloud/backup/apple_dev/cert/wa-wubi/provisioningProfiles");
   fs.mkdirSync(folder, { recursive: true });
   for (const { target, profile } of saved) {
     const destination = path.join(folder, target.title.replaceAll(" ", "_") + "_App_Store_" + profile.id + ".mobileprovision");
@@ -316,9 +319,8 @@ function withSigning(credentials, profiles, work, action) {
   }
 }
 
-function exportIPA(credentials, profiles, plan, work) {
-  const destination = path.join(buildRoot, plan.version + "-" + plan.build);
-  fs.mkdirSync(destination, { recursive: false });
+function exportIPA(credentials, profiles, version, work) {
+  const destination = fs.mkdtempSync(path.join(buildRoot, version + "-"));
   const archive = path.join(destination, "WAWubiMobile.xcarchive");
   const exportPath = path.join(destination, "export");
   const options = path.join(work, "ExportOptions.plist");
@@ -333,8 +335,8 @@ function exportIPA(credentials, profiles, plan, work) {
       "-destination", "generic/platform=iOS", "-derivedDataPath", path.join(buildRoot, "DerivedData"),
       "-archivePath", archive, `DEVELOPMENT_TEAM=${credentials.team}`, "CODE_SIGN_STYLE=Manual",
       "CODE_SIGN_IDENTITY=Apple Distribution", `WA_WUBI_APP_PROFILE=${profiles[0].name}`,
-      `WA_WUBI_KEYBOARD_PROFILE=${profiles[1].name}`, `MARKETING_VERSION=${plan.version}`,
-      `CURRENT_PROJECT_VERSION=${plan.build}`, "archive"]);
+      `WA_WUBI_KEYBOARD_PROFILE=${profiles[1].name}`, `MARKETING_VERSION=${version}`,
+      `CURRENT_PROJECT_VERSION=${version}`, "archive"]);
     run("xcodebuild", ["-exportArchive", "-archivePath", archive, "-exportOptionsPlist", options, "-exportPath", exportPath]);
     const app = path.join(archive, "Products/Applications/WAWubiMobile.app");
     run("codesign", ["--verify", "--deep", "--strict", app]);
@@ -351,7 +353,7 @@ function fastlaneKey(credentials, work) {
   return keyPath;
 }
 
-const fastlaneEnvironment = { ...process.env, FASTLANE_SKIP_UPDATE_CHECK: "1", FASTLANE_OPT_OUT_USAGE: "1" };
+const fastlaneEnvironment = () => ({ ...process.env, FASTLANE_SKIP_UPDATE_CHECK: "1", FASTLANE_OPT_OUT_USAGE: "1" });
 function deliver(keyPath, version, options) {
   const workspace = path.dirname(keyPath);
   const fastlaneFolder = path.join(workspace, "fastlane");
@@ -361,7 +363,7 @@ function deliver(keyPath, version, options) {
     "--app_version", version, "--metadata_path", path.join(appStore, "Metadata"),
     "--screenshots_path", path.join(appStore, "Upload"), "--force", "true",
     "--precheck_include_in_app_purchases", "false", ...options],
-  { cwd: workspace, env: fastlaneEnvironment });
+  { cwd: workspace, env: fastlaneEnvironment() });
 }
 
 async function main() {
@@ -380,10 +382,7 @@ async function main() {
   const asc = ascClient(credentials.key);
   const status = await appleStatus(asc, credentials);
   if (lane === "plan" && status.app) {
-    for (const mode of ["testflight", "app-store"]) {
-      const next = await chooseVersion(asc, status.app.id, version, mode);
-      console.log(`${mode}: next iOS ${next.version} (${next.build})`);
-    }
+    console.log(`Next iOS release: ${await chooseVersion(asc, status.app.id, version)}`);
     return;
   }
   if (!status.app || !status.bundles.every(Boolean) || (!["provision", "metadata"].includes(lane) && !status.profilesReady)) {
@@ -396,11 +395,12 @@ async function main() {
   fs.chmodSync(work, 0o700);
   try {
     if (lane === "provision") {
+      if (process.env.GITHUB_ACTIONS === "true") throw new Error("Provision from the local Apple signing configuration.");
       await provision(asc, credentials, status, work);
       return;
     }
     if (lane === "metadata") {
-      const { version: draftVersion } = await chooseVersion(asc, status.app.id, version, "app-store");
+      const draftVersion = await chooseVersion(asc, status.app.id, version);
       deliver(fastlaneKey(credentials, work), draftVersion,
         ["--skip_binary_upload", "true", "--submit_for_review", "false", "--run_precheck_before_submit", "false"]);
       return;
@@ -413,13 +413,9 @@ async function main() {
       const groups = await asc(`apps/${appID}/betaGroups`, { "filter[isInternalGroup]": "true", limit: 200 });
       if (!groups.some(item => item.attributes.name === group)) throw new Error("TestFlight group is not an existing internal group.");
     }
-    const plan = await chooseVersion(asc, appID, version, lane);
-    console.log(`iOS ${plan.version} (${plan.build}) · ${lane}`);
-    plan.counters[plan.version] = plan.build;
-    const counterTemp = plan.localCounters + ".tmp";
-    fs.writeFileSync(counterTemp, JSON.stringify(plan.counters));
-    fs.renameSync(counterTemp, plan.localCounters);
-    const ipa = exportIPA(credentials, profiles, plan, work);
+    const releaseVersion = await chooseVersion(asc, appID, version);
+    console.log(`iOS ${releaseVersion} · ${lane}`);
+    const ipa = exportIPA(credentials, profiles, releaseVersion, work);
     if (lane === "archive") {
       console.log("Signed IPA:", ipa);
       return;
@@ -432,9 +428,9 @@ async function main() {
       } else {
         options.push("--skip_waiting_for_build_processing", "true");
       }
-      run("fastlane", options, { env: fastlaneEnvironment });
+      run("fastlane", options, { env: fastlaneEnvironment() });
     } else {
-      deliver(keyPath, plan.version, ["--ipa", ipa, "--build_number", String(plan.build),
+      deliver(keyPath, releaseVersion, ["--ipa", ipa, "--build_number", releaseVersion,
         "--submit_for_review", "true", "--automatic_release", String(parsed.has("--automatic-release"))]);
     }
   } finally {

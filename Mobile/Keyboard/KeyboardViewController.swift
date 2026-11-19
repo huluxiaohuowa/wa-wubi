@@ -2,23 +2,30 @@ import SwiftUI
 import UIKit
 
 @MainActor final class KeyboardViewController: UIInputViewController {
-    private let store = MobileStore()
+    private let store = MobileStore(loadSnapshotImmediately: false)
     private lazy var session = KeyboardSession(store: store)
     private var host: UIHostingController<KeyboardSurface<InputModeButton>>?
+    private var loading = false
+    private var editingDocument = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        session.insert = { [weak self] in self?.textDocumentProxy.insertText($0) }
-        session.deleteBackward = { [weak self] in self?.textDocumentProxy.deleteBackward() }
-        session.adjustCursor = { [weak self] in self?.textDocumentProxy.adjustTextPosition(byCharacterOffset: $0) }
+        session.hasFullAccess = { [weak self] in self?.hasFullAccess == true }
+        session.insert = { [weak self] text in self?.editDocument { $0.insertText(text) } }
+        session.deleteBackward = { [weak self] in self?.editDocument { $0.deleteBackward() } }
+        session.adjustCursor = { [weak self] offset in
+            self?.editDocument { $0.adjustTextPosition(byCharacterOffset: offset) }
+        }
         session.playClick = { [weak self] in
             guard self?.store.keySound == true else { return }
             UIDevice.current.playInputClick()
         }
 
+        let usesSystemBackdrop: Bool
+        if #available(iOS 26.0, *) { usesSystemBackdrop = true } else { usesSystemBackdrop = false }
         let content = KeyboardSurface(session: session, store: store,
                                       globe: { [weak self] in InputModeButton(controller: self) },
-                                      showGlobe: needsInputModeSwitchKey)
+                                      showGlobe: needsInputModeSwitchKey, usesSystemBackdrop: usesSystemBackdrop)
         let host = UIHostingController(rootView: content)
         self.host = host
         addChild(host)
@@ -35,12 +42,17 @@ import UIKit
         height.priority = .init(900)
         height.isActive = true
         host.didMove(toParent: self)
-        Task { await store.prepare() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        store.reload()
+        guard !loading else { return }
+        loading = true
+        Task { [weak self, store] in
+            await store.reloadForKeyboard()
+            await store.prepare()
+            self?.loading = false
+        }
     }
 
     override func viewWillLayoutSubviews() {
@@ -52,21 +64,55 @@ import UIKit
 
     override func textWillChange(_ textInput: (any UITextInput)?) {
         super.textWillChange(textInput)
+        if !editingDocument { session.reset() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
         session.reset()
-        store.reload()
+    }
+
+    private func editDocument(_ action: (any UITextDocumentProxy) -> Void) {
+        editingDocument = true
+        defer { editingDocument = false }
+        action(textDocumentProxy)
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        MobileCandidateGlyphs.clearCache()
     }
 }
 
 private struct InputModeButton: UIViewRepresentable {
     weak var controller: KeyboardViewController?
 
-    func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .system)
+    func makeUIView(context: Context) -> HoldToSwitchButton {
+        let button = HoldToSwitchButton(type: .system)
         button.setImage(UIImage(systemName: "globe"), for: .normal)
         button.accessibilityLabel = "切换输入法"
-        button.addTarget(controller, action: #selector(UIInputViewController.handleInputModeList(from:with:)), for: .allTouchEvents)
+        button.accessibilityHint = "长按切换到下一个输入法"
+        let hold = UILongPressGestureRecognizer(target: button, action: #selector(HoldToSwitchButton.switchAfterHold(_:)))
+        button.addGestureRecognizer(hold)
         return button
     }
 
-    func updateUIView(_ uiView: UIButton, context: Context) {}
+    func updateUIView(_ uiView: HoldToSwitchButton, context: Context) {
+        uiView.controller = controller
+    }
+}
+
+private final class HoldToSwitchButton: UIButton {
+    weak var controller: KeyboardViewController?
+
+    @objc func switchAfterHold(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .ended, bounds.contains(gesture.location(in: self)) else { return }
+        controller?.advanceToNextInputMode()
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard let controller else { return false }
+        controller.advanceToNextInputMode()
+        return true
+    }
 }

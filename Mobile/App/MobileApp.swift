@@ -76,6 +76,7 @@ private struct PracticeScreen: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("WA 五笔")
         .onAppear { [store] in voice.profile = { [weak store] in MobileVoiceProfile(store?.preferences ?? Preferences()) } }
+        .onDisappear { session.reset() }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Menu {

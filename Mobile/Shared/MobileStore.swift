@@ -45,6 +45,11 @@ enum MobileStorage {
 }
 
 @MainActor final class MobileStore: ObservableObject {
+    private static let bundledLexicon = Task.detached(priority: .userInitiated) {
+        guard let url = Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml") else { return nil as Lexicon? }
+        return autoreleasepool { try? Lexicon.bundled(String(contentsOf: url, encoding: .utf8)) }
+    }
+
     @Published private(set) var preferences = Preferences()
     @Published private(set) var libraries: [WordGroup] = []
     @Published private(set) var status = ""
@@ -72,8 +77,10 @@ enum MobileStorage {
     private let defaults = UserDefaults(suiteName: MobileStorage.group) ?? .standard
     private let device = UUID().uuidString
     private var snapshot = Snapshot()
+    private var snapshotGeneration = 0
     private(set) var lexicon = Lexicon([])
     private var pinyin: [String: [Candidate]] = [:]
+    private var buildingPinyin = false
     private(set) var preferredCodes: [String: String] = [:]
     private var extra: [String: [Entry]] = [:]
     private var edits: [String: [String: WordEdit]] = [:]
@@ -81,19 +88,14 @@ enum MobileStorage {
     private var ranking: [String: [String: Int]] = [:]
     var hasCloudBackup: Bool { FileManager.default.fileExists(atPath: MobileStorage.backup.path) }
 
-    init() {
-        reload()
+    init(loadSnapshotImmediately: Bool = true) {
+        if loadSnapshotImmediately { reload() }
     }
 
     func prepare() async {
         guard !ready else { return }
-        guard let url = Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml") else {
-            status = "找不到 86 五笔码表"
-            return
-        }
-        let result = await Task.detached(priority: .userInitiated) {
-            try? Lexicon.bundled(String(contentsOf: url, encoding: .utf8))
-        }.value
+        let result = await Self.bundledLexicon.value
+        guard !ready else { return }
         guard let result else { status = "无法读取 86 五笔码表"; return }
         lexicon = result
         ready = true
@@ -101,13 +103,24 @@ enum MobileStorage {
     }
 
     func reload() {
+        reloadLocalOptions()
+        if let saved = try? MobileStorage.read() { apply(saved) }
+    }
+
+    func reloadForKeyboard() async {
+        reloadLocalOptions()
+        let generation = snapshotGeneration
+        let saved = await Task.detached(priority: .userInitiated) { try? MobileStorage.read() }.value
+        if !Task.isCancelled, generation == snapshotGeneration, let saved { apply(saved) }
+    }
+
+    private func reloadLocalOptions() {
         touchCorrection = defaults.bool(forKey: "touchCorrection")
         slideCorrection = defaults.object(forKey: "slideCorrection") as? Bool ?? true
         splitWideKeyboard = defaults.object(forKey: "splitWideKeyboard") as? Bool ?? true
         keySound = defaults.bool(forKey: "keySound")
         keyHaptics = defaults.bool(forKey: "keyHaptics")
         syncEnabled = defaults.bool(forKey: "mobileSyncEnabled")
-        if let saved = try? MobileStorage.read() { apply(saved) }
     }
 
     func updatePreferences(_ change: (inout Preferences) -> Void) {
@@ -132,9 +145,22 @@ enum MobileStorage {
         }
         if preferences.mixedPinyin {
             let known = Set(words.map(\.word))
-            words += pinyin[code, default: []].filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+            words += pinyin[code, default: []]
+                .filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
+                .map { Candidate($0.word, hint: $0.hint, source: .pinyin) }
         }
-        return lexicon.applyingManualOrder(orders[code, default: []], to: words, code: code)
+        let ordered = lexicon.applyingManualOrder(orders[code, default: []], to: words, code: code)
+        // Keep exact matches in place and move unreadable continuation hints to the end.
+        var visible: [Candidate] = []
+        var unsupportedHints: [Candidate] = []
+        for candidate in ordered {
+            if !candidate.hint.isEmpty, !MobileCandidateGlyphs.missingCodePoints(in: candidate.word).isEmpty {
+                unsupportedHints.append(candidate)
+            } else {
+                visible.append(candidate)
+            }
+        }
+        return visible + unsupportedHints
     }
 
     func record(_ selections: [Composition.Selection]) {
@@ -146,14 +172,31 @@ enum MobileStorage {
         }
     }
 
-    func add(_ entry: Entry, learned: Bool = false) {
+    func add(_ entry: Entry) {
         guard Entry.validCode(entry.code), !entry.word.isEmpty, entry.word.count <= 64 else { return }
         let key = "personal/\(entry.code)/\(entry.word)"
-        if learned && (preferredCodes[entry.word] != nil || lexicon.existingCode(for: entry.word) != nil ||
-                       snapshot.values[key] != nil || edits[entry.code]?[entry.word]?.hidden == true) { return }
         edit { state in
             state.set(key, to: try JSONEncoder().encode(entry), device: device)
-            if !learned { try setEdit(WordEdit(entry.word, pinned: true), code: entry.code, in: &state) }
+            try setEdit(WordEdit(entry.word, pinned: true), code: entry.code, in: &state)
+        }
+    }
+
+    func addLearnedPhrases(_ entries: [Entry]) {
+        let newWords = entries.filter {
+            preferredCodes[$0.word] == nil && lexicon.existingCode(for: $0.word) == nil &&
+                snapshot.values["personal/\($0.code)/\($0.word)"] == nil && edits[$0.code]?[$0.word]?.hidden != true
+        }
+        guard !newWords.isEmpty else { return }
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        edit { state in
+            for entry in newWords {
+                let key = "personal/\(entry.code)/\(entry.word)"
+                guard state.values[key] == nil else { continue }
+                if let data = state.values["edit/\(entry.code)/\(entry.word)"]?.value,
+                   let edit = try? decoder.decode(WordEdit.self, from: data), edit.hidden { continue }
+                state.set(key, to: try encoder.encode(entry), device: device)
+            }
         }
     }
 
@@ -282,6 +325,7 @@ enum MobileStorage {
 
     private func apply(_ state: Snapshot) {
         guard state.values != snapshot.values else { return }
+        snapshotGeneration += 1
         snapshot = state
         let decoder = JSONDecoder()
         var fields = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(Preferences()))) as? [String: Any] ?? [:]
@@ -333,8 +377,13 @@ enum MobileStorage {
     }
 
     private func preparePinyin() {
-        guard ready, preferences.inputScheme != .wubi, pinyin.isEmpty else { return }
+        guard ready, preferences.inputScheme != .wubi, pinyin.isEmpty, !buildingPinyin else { return }
+        buildingPinyin = true
         let lexicon = lexicon
-        Task { pinyin = await Task.detached(priority: .utility) { lexicon.pinyinIndex() }.value }
+        Task { [weak self] in
+            let index = await Task.detached(priority: .utility) { autoreleasepool { lexicon.pinyinIndex() } }.value
+            self?.pinyin = index
+            self?.buildingPinyin = false
+        }
     }
 }

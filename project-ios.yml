@@ -7,21 +7,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
-targetTemplates:
-  candidateFont:
-    postBuildScripts:
-      - name: Bundle candidate font
-        inputFiles:
-          - $(SRCROOT)/Resources/WAWubiHan.zip
-        outputFiles:
-          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WAWubiHan.ttc
-          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ScriptwideSansCJK-OFL.txt
-        script: |
-          set -eu
-          /usr/bin/unzip -p "$SCRIPT_INPUT_FILE_0" WAWubiHan.ttc > "$SCRIPT_OUTPUT_FILE_0"
-          /usr/bin/unzip -p "$SCRIPT_INPUT_FILE_0" ScriptwideSansCJK-OFL.txt > "$SCRIPT_OUTPUT_FILE_1"
+    MARKETING_VERSION: "1.0.1"
+    CURRENT_PROJECT_VERSION: "1.0.1"
 targets:
   WubiCore:
     type: library.static
@@ -32,7 +19,6 @@ targets:
         DEFINES_MODULE: YES
   WAWubiMobile:
     type: application
-    templates: [candidateFont]
     platform: iOS
     sources:
       - path: Mobile/App
@@ -42,7 +28,6 @@ targets:
       - path: Mobile/App/PrivacyInfo.xcprivacy
         buildPhase: resources
       - Mobile/Shared
-      - Sources/Mac/CandidateFont.swift
       - path: Resources/wubi86.dict.yaml
         buildPhase: resources
       - path: Resources/LGPL-3.0.txt
@@ -64,7 +49,6 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: $(WA_WUBI_APP_PROFILE)
   WAWubiKeyboard:
     type: app-extension
-    templates: [candidateFont]
     platform: iOS
     sources:
       - path: Mobile/Keyboard
@@ -72,7 +56,6 @@ targets:
       - path: Mobile/Keyboard/PrivacyInfo.xcprivacy
         buildPhase: resources
       - Mobile/Shared
-      - Sources/Mac/CandidateFont.swift
       - path: Resources/wubi86.dict.yaml
         buildPhase: resources
       - path: Resources/LGPL-3.0.txt

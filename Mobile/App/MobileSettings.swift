@@ -34,8 +34,6 @@ struct MobileSettings: View {
                 } label: {
                     Label("管理词库", systemImage: "books.vertical")
                 }
-                Toggle("自动加词", isOn: Binding(get: { store.preferences.learnsPhrases ?? false },
-                                                     set: { value in store.updatePreferences { $0.learnsPhrases = value } }))
                 Toggle("自动调序", isOn: binding(\.automaticallyRanks))
                 Picker("调序范围", selection: binding(\.rankingRange)) {
                     Text("保留一级简码和键名").tag(RankingRange.ordinary)
@@ -50,7 +48,30 @@ struct MobileSettings: View {
             } footer: {
                 Text("支持在线下载搜狗、Rime 和清华词库，也可导入本地词库文件。")
             }
+            Section {
+                Toggle("连续上屏时自动组词", isOn: Binding(
+                    get: { store.preferences.learnsContinuousPhrases ?? false },
+                    set: { value in store.updatePreferences { $0.learnsContinuousPhrases = value } }
+                ))
+                Picker("连续组词最大词长", selection: Binding(
+                    get: { min(10, max(2, store.preferences.continuousPhraseLength ?? 4)) },
+                    set: { value in store.updatePreferences { $0.continuousPhraseLength = value } }
+                )) {
+                    ForEach(2...10, id: \.self) { Text("\($0) 字").tag($0) }
+                }
+                .disabled(store.preferences.learnsContinuousPhrases != true)
+                Toggle("删码重打时自动加词", isOn: Binding(
+                    get: { store.preferences.learnsPhrases ?? false },
+                    set: { value in store.updatePreferences { $0.learnsPhrases = value } }
+                ))
+            } header: {
+                Text("自动加词")
+            } footer: {
+                Text("连续组词按完整上屏字词取全码。删码重打时，组合出的全码与原四码一致才加词。系统键盘写入共享词库需要允许完全访问。")
+            }
+            .disabled(store.preferences.singleCharacters)
             Section("输入") {
+                NavigationLink("云联想") { MobileCloudSettings() }
                 Picker("输入方案", selection: binding(\.inputScheme)) {
                     ForEach(InputScheme.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
@@ -67,10 +88,6 @@ struct MobileSettings: View {
             }
             Section("候选栏外观") {
                 LabeledContent("主题", value: "跟随系统")
-                Picker("候选布局", selection: binding(\.vertical)) {
-                    Text("横排").tag(false)
-                    Text("纵排").tag(true)
-                }
                 VStack(alignment: .leading) {
                     Text("字号 \(Int(store.preferences.fontSize))")
                     Slider(value: binding(\.fontSize), in: 14...28, step: 1)
