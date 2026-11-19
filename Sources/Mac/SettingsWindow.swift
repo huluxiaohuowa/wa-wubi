@@ -242,21 +242,6 @@ struct SettingsView: View {
             Toggle("启用 z 键功能", isOn: pref(\.zFunction))
             Toggle("在光标旁提示中英及简繁切换", isOn: pref(\.modeHints))
             Toggle("输简出繁", isOn: pref(\.traditional))
-            Divider()
-            Toggle("自动学习五笔新词", isOn: Binding(
-                get: { store.preferences.learnsContinuousPhrases ?? false },
-                set: { value in store.update { $0.learnsContinuousPhrases = value } }
-            ))
-            .disabled(store.preferences.singleCharacters)
-            Picker("自动组词最大词长", selection: Binding(
-                get: { min(10, max(2, store.preferences.continuousPhraseLength ?? 4)) },
-                set: { value in store.update { $0.continuousPhraseLength = value } }
-            )) {
-                ForEach(2...10, id: \.self) { Text("\($0) 字").tag($0) }
-            }
-            .disabled(store.preferences.learnsContinuousPhrases != true || store.preferences.singleCharacters)
-            Text("连续上屏的五笔字词会按 86 五笔规则合成词码，并加入用户词库。")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -365,11 +350,8 @@ struct LexiconSettings: View {
                 if model.deleteWord { Button("取消") { model.deleteWord = false } }
             }
             if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary) }
-            PhraseLearningToggle(isOn: Binding(
-                get: { store.preferences.learnsPhrases ?? false },
-                set: { value in store.update { $0.learnsPhrases = value } }
-            ))
-            .disabled(store.preferences.singleCharacters)
+            Divider()
+            automaticPhraseSettings
             Divider()
             Picker("86 五笔词库方案", selection: Binding(
                 get: { store.preferences.singleCharacters },
@@ -408,10 +390,8 @@ struct LexiconSettings: View {
         .onChange(of: model.requestID) { _ in manualCode = nil }
         .sheet(isPresented: $editingPersonal) {
             PersonalWordEditor(entries: store.groups.first { $0.id == "personal" }?.entries ?? [],
-                               lexicon: store.lexicon, learnsPhrases: store.preferences.learnsPhrases ?? false,
-                               singleCharacters: store.preferences.singleCharacters) { entries, learning in
+                               lexicon: store.lexicon) { entries in
                 store.replacePersonal(with: entries)
-                if let learning { store.update { $0.learnsPhrases = learning } }
                 message = "已保存用户词库。"
             }
         }
@@ -419,6 +399,32 @@ struct LexiconSettings: View {
             Button("移除", role: .destructive) { if let remove { store.remove(remove) }; remove = nil }
             Button("取消", role: .cancel) { remove = nil }
         } message: { Text("移除后，其他启用了 iCloud 同步的 Mac 也会更新。") }
+    }
+
+    private var automaticPhraseSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("自动加词").font(.headline)
+            Toggle("连续上屏时自动组词", isOn: Binding(
+                get: { store.preferences.learnsContinuousPhrases ?? false },
+                set: { value in store.update { $0.learnsContinuousPhrases = value } }
+            ))
+            Text("把连续上屏的五笔字词按全码组合，加入用户词库。")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("连续组词最大词长", selection: Binding(
+                get: { min(10, max(2, store.preferences.continuousPhraseLength ?? 4)) },
+                set: { value in store.update { $0.continuousPhraseLength = value } }
+            )) {
+                ForEach(2...10, id: \.self) { Text("\($0) 字").tag($0) }
+            }
+            .disabled(store.preferences.learnsContinuousPhrases != true)
+            Toggle("删码重打时自动加词", isOn: Binding(
+                get: { store.preferences.learnsPhrases ?? false },
+                set: { value in store.update { $0.learnsPhrases = value } }
+            ))
+            Text("删掉未选中的四码后逐字上屏，组合出的全码和原四码一致时加词。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .disabled(store.preferences.singleCharacters)
     }
 
     private var inferredCode: String? {

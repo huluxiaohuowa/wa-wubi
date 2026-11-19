@@ -242,28 +242,29 @@ final class InputController: IMKInputController {
 
     private func scheduleGlosses(at target: IMKTextInput) {
         let config = CloudPredictionConfiguration.current
-        guard LanguageLearning.isEnabled,
-              target.bundleIdentifier() != Bundle.main.bundleIdentifier, !IsSecureEventInputEnabled() else { return }
+        guard LanguageLearning.isEnabled, !IsSecureEventInputEnabled() else { return }
         let words = localChineseWords(state.visible, exactOnly: false, limit: state.pageSize)
         guard words != glossRequest else { return }
         glossTask?.cancel()
         glossRequest = words
         glosses = [:]
         guard !words.isEmpty else { return }
-        let selection = target.selectedRange()
         let usesCloud = config.enabled && config.showsGlosses == true
         let language = usesCloud ? config.translationLanguage : "英语"
+        let cloudSelection = usesCloud && target.bundleIdentifier() != Bundle.main.bundleIdentifier
+            ? target.selectedRange() : nil
         glossTask = Task { @MainActor [weak self] in
             let offline = await LanguageLearning.offlineTranslations(for: words, language: language)
             guard let self, !Task.isCancelled, LanguageLearning.isEnabled,
-                  self.canShowCloud(at: target, selection: selection, config: config),
+                  Self.activeController === self, self.state.active, !self.state.english,
+                  !IsSecureEventInputEnabled(), CloudPredictionConfiguration.current == config,
                   self.glossRequest == words else { return }
             if !offline.isEmpty {
                 self.glosses = offline
                 self.draw(target, requestGlosses: false)
             }
             let missing = words.filter { offline[$0] == nil }
-            guard usesCloud, !missing.isEmpty else { return }
+            guard let selection = cloudSelection, !missing.isEmpty else { return }
             do {
                 try await Task.sleep(nanoseconds: 650_000_000)
                 guard LanguageLearning.isEnabled, self.canShowCloud(at: target, selection: selection, config: config) else { return }
@@ -287,12 +288,17 @@ final class InputController: IMKInputController {
 
     private func localChineseWords(_ candidates: [Candidate], exactOnly: Bool, limit: Int) -> [String] {
         var seen = Set<String>()
-        return Array(candidates.lazy.filter {
-            !$0.isCloud && (!exactOnly || $0.hint.isEmpty) &&
-                (1...24).contains($0.word.count) &&
-                $0.word.unicodeScalars.contains { $0.properties.isIdeographic } &&
-                seen.insert($0.word).inserted
-        }.prefix(limit).map(\.word))
+        var words: [String] = []
+        for candidate in candidates {
+            guard words.count < limit else { break }
+            let word = candidate.word
+            guard !candidate.isCloud, !exactOnly || candidate.hint.isEmpty,
+                  (1...24).contains(word.count),
+                  word.unicodeScalars.contains(where: { $0.properties.isIdeographic }),
+                  seen.insert(word).inserted else { continue }
+            words.append(word)
+        }
+        return words
     }
 
     private func warmPinyin() {
