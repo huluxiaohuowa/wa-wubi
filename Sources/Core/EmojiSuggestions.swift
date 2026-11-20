@@ -114,17 +114,31 @@ enum EmojiSuggestions {
     }()
 
     static func adding(to candidates: [Candidate], mode: Composition.Mode, code: String, pageSize: Int) -> [Candidate] {
+        let expandsExactMatches = mode == .wubi && code.count == 4
         if mode == .wubi {
             if code.count == 1 { return candidates }
-            if let first = code.first, Lexicon.roots[first] != nil, code.count == 4, code.allSatisfy({ $0 == first }) {
+            if expandsExactMatches, let first = code.first, Lexicon.roots[first] != nil, code.allSatisfy({ $0 == first }) {
                 return candidates
             }
         }
-        guard let first = candidates.first, !first.isCloud,
-              let emoji = byWord[first.word], !candidates.contains(where: { $0.word == emoji }) else { return candidates }
+        guard let first = candidates.first, !first.isCloud else { return candidates }
+
+        var seen = Set<String>()
+        var suggestions: [Candidate] = []
+        for (index, candidate) in candidates.enumerated() {
+            if index > 0 {
+                guard expandsExactMatches else { break }
+                guard candidate.source == nil, candidate.hint.isEmpty else { continue }
+            }
+            guard let emoji = byWord[candidate.word], seen.insert(emoji).inserted,
+                  !candidates.contains(where: { $0.word == emoji }) else { continue }
+            suggestions.append(Candidate(emoji, source: .emojiSuggestion))
+        }
+        guard !suggestions.isEmpty else { return candidates }
+
         var result = candidates
         let firstCloud = candidates.firstIndex(where: \.isCloud) ?? candidates.count
-        result.insert(Candidate(emoji, source: .emojiSuggestion), at: min(3, pageSize - 1, firstCloud))
+        result.insert(contentsOf: suggestions, at: min(3, pageSize - 1, firstCloud))
         return result
     }
 }

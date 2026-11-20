@@ -167,6 +167,27 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(result.selections.isEmpty)
     }
 
+    func testFourWubiLettersSuggestEmojiFromEveryExactCandidate() {
+        let words = [
+            Candidate("独苗"), Candidate("猫"), Candidate("小猫"), Candidate("狗"),
+            Candidate("熊猫", hint: "a"), Candidate("兔子", source: .pinyin),
+            Candidate("苹果", source: .cloud)
+        ]
+        let expanded = EmojiSuggestions.adding(to: words, mode: .wubi, code: "qtal", pageSize: 9)
+        XCTAssertEqual(expanded.map(\.word),
+                       ["独苗", "猫", "小猫", "🐱", "🐶", "狗", "熊猫", "兔子", "苹果"])
+        XCTAssertEqual(expanded.filter { !$0.isEmojiSuggestion }, words)
+        XCTAssertEqual(EmojiSuggestions.adding(to: words, mode: .wubi, code: "qta", pageSize: 9), words)
+        XCTAssertEqual(EmojiSuggestions.adding(to: words, mode: .pinyin, code: "long", pageSize: 9), words)
+
+        let bundled = lexicon.exact("qnbb")
+        XCTAssertEqual(bundled.first?.word, "包子")
+        XCTAssertTrue(bundled.contains { $0.word == "饺子" && $0.hint.isEmpty })
+        let bundledWithEmoji = EmojiSuggestions.adding(to: bundled, mode: .wubi, code: "qnbb", pageSize: 9)
+        XCTAssertEqual(bundledWithEmoji.first?.word, "包子")
+        XCTAssertTrue(bundledWithEmoji.prefix(9).contains { $0.word == "🥟" && $0.isEmojiSuggestion })
+    }
+
     func testEmojiPreservesWubiShortcutsKeyNamesAndAutoCommit() {
         let rows = [Candidate("火"), Candidate("炎")]
         XCTAssertEqual(EmojiSuggestions.adding(to: rows, mode: .wubi, code: "o", pageSize: 9), rows)
