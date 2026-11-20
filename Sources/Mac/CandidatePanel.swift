@@ -81,7 +81,7 @@ struct CandidateStrip: View {
                     .accessibilityValue([candidates[index].hint, translation(at: index)]
                         .filter { !$0.isEmpty }.joined(separator: "，"))
                     .contextMenu {
-                        if !candidates[index].isCloud {
+                        if candidates[index].isDictionaryEditable {
                             if let pin { Button("移到首位") { pin(index) } }
                             if let hide { Button("隐藏候选") { hide(index) } }
                         }
@@ -132,7 +132,9 @@ struct CandidateStrip: View {
     private func candidateLabel(_ index: Int, vertical: Bool, showsCodes: Bool) -> some View {
         let candidate = candidates[index]
         let number = Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
-        let word = Text(CandidateFont.label(candidate.word, size: preferences.fontSize))
+        let word = candidate.isEmojiSuggestion
+            ? Text(candidate.word).font(.system(size: preferences.fontSize))
+            : Text(CandidateFont.label(candidate.word, size: preferences.fontSize))
         let code = Text(candidate.hint).font(.system(size: 10, design: .monospaced)).lineLimit(1)
         let translation = translation(at: index)
         let definition = Text(translation.isEmpty ? " " : translation)

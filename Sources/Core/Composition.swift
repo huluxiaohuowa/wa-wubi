@@ -134,7 +134,8 @@ public struct Composition {
     }
 
     public mutating func refresh(_ lookup: (Mode, String) -> [Candidate]) {
-        candidates = mode == .english || code.isEmpty ? [] : lookup(mode, code)
+        candidates = mode == .english || code.isEmpty ? [] :
+            EmojiSuggestions.adding(to: lookup(mode, code), mode: mode, code: code, pageSize: pageSize)
         page = min(page, pageCount - 1)
         selected = min(selected, max(0, visible.count - 1))
     }
@@ -285,7 +286,8 @@ public struct Composition {
             page = 0
             selected = 0
             refresh(lookup)
-            if mode == .wubi, preferences.autoCommit, code.count == 4, candidates.count == 1 {
+            if mode == .wubi, preferences.autoCommit, code.count == 4,
+               candidates.lazy.filter({ !$0.isEmojiSuggestion }).count == 1 {
                 let selected = accept(index: 0)
                 return Result(true, prefix.text + selected.text, selections: prefix.selections + selected.selections,
                               automaticSelection: selected.selections.first)

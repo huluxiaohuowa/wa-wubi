@@ -146,6 +146,46 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(state.candidates, lexicon.exact("s"))
     }
 
+    func testEmojiFollowsFirstCandidateAndCommitsWithoutLearning() {
+        var first = Candidate("猫")
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in
+            code == "qt" ? [first, Candidate("猿"), Candidate("狐"), Candidate("猎手"),
+                            Candidate("云候选", source: .cloud)] : []
+        }
+        var preferences = Preferences()
+        preferences.candidateCount = 4
+        var state = Composition()
+        for char in "qt" { _ = state.handle(.letter(char), preferences: preferences, lookup: lookup) }
+        XCTAssertEqual(state.visible.map(\.word), ["猫", "猿", "狐", "🐱"])
+        XCTAssertFalse(lexicon.canMoveCandidate(state.visible[3], at: 3, code: "qt"))
+
+        first = Candidate("狗")
+        state.refresh(lookup)
+        XCTAssertEqual(state.visible.map(\.word), ["狗", "猿", "狐", "🐶"])
+        let result = state.accept(index: 3)
+        XCTAssertEqual(result.text, "🐶")
+        XCTAssertTrue(result.selections.isEmpty)
+    }
+
+    func testEmojiPreservesWubiShortcutsKeyNamesAndAutoCommit() {
+        let rows = [Candidate("火"), Candidate("炎")]
+        XCTAssertEqual(EmojiSuggestions.adding(to: rows, mode: .wubi, code: "o", pageSize: 9), rows)
+        XCTAssertEqual(EmojiSuggestions.adding(to: rows, mode: .wubi, code: "oooo", pageSize: 9), rows)
+        let alreadyHasEmoji = [Candidate("猫"), Candidate("🐱")]
+        XCTAssertEqual(EmojiSuggestions.adding(to: alreadyHasEmoji, mode: .wubi, code: "qt", pageSize: 9), alreadyHasEmoji)
+        XCTAssertTrue(EmojiSuggestions.adding(to: [], mode: .wubi, code: "kksk", pageSize: 9).isEmpty)
+
+        var preferences = Preferences()
+        preferences.autoCommit = true
+        var state = Composition()
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in code == "qtae" ? [Candidate("猫")] : [] }
+        for char in "qta" { _ = state.handle(.letter(char), preferences: preferences, lookup: lookup) }
+        let result = state.handle(.letter("e"), preferences: preferences, lookup: lookup)
+        XCTAssertEqual(result.text, "猫")
+        XCTAssertEqual(result.automaticSelection?.word, "猫")
+        XCTAssertFalse(state.active)
+    }
+
     func testContinuousPhraseLearningUsesFullCodesAndWholeCommittedWords() {
         let words = Lexicon([
             Entry("甲", "aabc"), Entry("乙", "bbcd"), Entry("丙", "ccde"),

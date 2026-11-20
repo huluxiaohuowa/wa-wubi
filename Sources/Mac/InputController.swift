@@ -544,7 +544,7 @@ final class InputController: IMKInputController {
     }
 
     private func edit(_ index: Int, target: IMKTextInput, hide: Bool) {
-        guard state.mode == .wubi, state.visible.indices.contains(index), !state.visible[index].isCloud else { return }
+        guard state.mode == .wubi, state.visible.indices.contains(index), state.visible[index].isDictionaryEditable else { return }
         store.edit(state.code, state.visible[index].word, pinned: !hide, hidden: hide)
         resetContinuousLearning()
         clearCloud()
