@@ -174,8 +174,12 @@ final class CoreTests: XCTestCase {
             Candidate("苹果", source: .cloud)
         ]
         let expanded = EmojiSuggestions.adding(to: words, mode: .wubi, code: "qtal", pageSize: 9)
-        XCTAssertEqual(expanded.map(\.word),
-                       ["独苗", "猫", "小猫", "🐱", "🐶", "狗", "熊猫", "兔子", "苹果"])
+        let suggestions = expanded.filter(\.isEmojiSuggestion).map(\.word)
+        XCTAssertEqual(Array(suggestions.prefix(2)), ["🐱", "🐶"])
+        XCTAssertTrue(suggestions.contains("🐈"))
+        XCTAssertTrue(suggestions.contains("🐕"))
+        XCTAssertEqual(Set(suggestions).count, suggestions.count)
+        XCTAssertTrue(Set(suggestions).isDisjoint(with: ["🐼", "🐰", "🍎"]))
         XCTAssertEqual(expanded.filter { !$0.isEmojiSuggestion }, words)
         XCTAssertEqual(EmojiSuggestions.adding(to: words, mode: .wubi, code: "qta", pageSize: 9), words)
         XCTAssertEqual(EmojiSuggestions.adding(to: words, mode: .pinyin, code: "long", pageSize: 9), words)
@@ -193,7 +197,9 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(EmojiSuggestions.adding(to: rows, mode: .wubi, code: "o", pageSize: 9), rows)
         XCTAssertEqual(EmojiSuggestions.adding(to: rows, mode: .wubi, code: "oooo", pageSize: 9), rows)
         let alreadyHasEmoji = [Candidate("猫"), Candidate("🐱")]
-        XCTAssertEqual(EmojiSuggestions.adding(to: alreadyHasEmoji, mode: .wubi, code: "qt", pageSize: 9), alreadyHasEmoji)
+        let suggestions = EmojiSuggestions.adding(to: alreadyHasEmoji, mode: .wubi, code: "qt", pageSize: 9)
+        XCTAssertEqual(suggestions.filter { $0.word == "🐱" }.count, 1)
+        XCTAssertEqual(suggestions.filter { !$0.isEmojiSuggestion }, alreadyHasEmoji)
         XCTAssertTrue(EmojiSuggestions.adding(to: [], mode: .wubi, code: "kksk", pageSize: 9).isEmpty)
 
         var preferences = Preferences()

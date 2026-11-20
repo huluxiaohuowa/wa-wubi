@@ -116,6 +116,36 @@ enum EmojiSuggestions {
         return index
     }()
 
+    // Broad search terms need representative results even when a CLDR locale tags only a few examples.
+    private static let categories: [String: [String]] = {
+        let groups = [
+            ("花 花朵 鮮花 鲜花 花卉", "🌹 🌸 💐 🌼 🌻 🌺 🌷 🪷 🪻 🥀"),
+            ("鸟 鳥 鸟类 鳥類", "🐦 🕊️ 🦜 🦉 🦆 🦅 🦢 🐦‍⬛"),
+            ("动物 動物", "🐶 🐱 🐼 🐰 🐯 🦁 🐵 🐘"),
+            ("水果 鲜果 鮮果", "🍎 🍌 🍉 🍇 🍓 🍊 🍍 🥭"),
+            ("植物", "🪴 🌱 🌿 🌵 🌳 🍀"),
+            ("树 樹 树木 樹木", "🌳 🌲 🌴 🎄"),
+            ("心 爱心 愛心", "❤️ 🩷 💖 💕 🧡 💛 💚 💙"),
+            ("笑 笑脸 笑臉", "😄 😊 😂 🤣 😆 🙂"),
+            ("星 星星", "⭐️ 🌟 ✨ 🌠 💫"),
+            ("天气 天氣", "☀️ ⛅️ ☁️ 🌧️ ⛈️ 🌨️ 🌪️ 🌈"),
+            ("运动 運動 体育 體育", "🏃 ⚽️ 🏀 🏊 🚴 🎾 🏸"),
+            ("球 球类 球類", "⚽️ 🏀 🏐 ⚾️ 🎾 🏈 🎱"),
+            ("交通工具 車輛 车辆", "🚗 🚌 🚆 ✈️ 🚲 🚢"),
+            ("饮料 飲料", "🥤 🧃 🧋 ☕️ 🍵 🍹 🥛"),
+            ("乐器 樂器", "🎹 🎸 🎻 🎷 🎺 🥁 🪈"),
+            ("旗 旗子 旗帜 旗幟", "🏳️ 🚩 🏴 🏁 🎌"),
+            ("衣服 服装 服裝", "👕 👔 👗 🧥 👖 👚"),
+            ("食物 食品 美食", "🍚 🍜 🥟 🍞 🍕 🍔 🍲")
+        ]
+        var index: [String: [String]] = [:]
+        for (words, emoji) in groups {
+            let variants = emoji.split(separator: " ").map(String.init)
+            for word in words.split(separator: " ") { index[String(word)] = variants }
+        }
+        return index
+    }()
+
     static func adding(to candidates: [Candidate], mode: Composition.Mode, code: String, pageSize: Int) -> [Candidate] {
         let expandsExactMatches = mode == .wubi && code.count == 4
         if mode == .wubi {
@@ -126,23 +156,34 @@ enum EmojiSuggestions {
         }
         guard let first = candidates.first, !first.isCloud else { return candidates }
 
-        var seen = Set<String>()
-        var suggestions: [Candidate] = []
+        var matches: [[String]] = []
         for (index, candidate) in candidates.enumerated() {
             if index > 0 {
                 guard expandsExactMatches else { break }
                 guard candidate.source == nil, candidate.hint.isEmpty else { continue }
             }
-            let emoji = byWord[candidate.word] ?? EmojiAnnotations.emoji(for: candidate.word)
-            guard let emoji, seen.insert(emoji).inserted,
-                  !candidates.contains(where: { $0.word == emoji }) else { continue }
-            suggestions.append(Candidate(emoji, source: .emojiSuggestion))
+            let word = candidate.word
+            let emojis = categories[word] ?? ((byWord[word].map { [$0] } ?? []) + EmojiAnnotations.emojis(for: word))
+            if !emojis.isEmpty { matches.append(emojis) }
+        }
+        guard let rankCount = matches.map(\.count).max() else { return candidates }
+
+        // Give each matching word a turn before adding lower-ranked alternatives.
+        var seen = Set(candidates.map(\.word))
+        var suggestions: [Candidate] = []
+        for rank in 0..<rankCount {
+            for emojis in matches where emojis.indices.contains(rank) && seen.insert(emojis[rank]).inserted {
+                suggestions.append(Candidate(emojis[rank], source: .emojiSuggestion))
+            }
         }
         guard !suggestions.isEmpty else { return candidates }
 
         var result = candidates
         let firstCloud = candidates.firstIndex(where: \.isCloud) ?? candidates.count
-        result.insert(contentsOf: suggestions, at: min(3, pageSize - 1, firstCloud))
+        let insertion = min(3, max(1, pageSize - 1), firstCloud)
+        let firstPageCount = min(suggestions.count, max(0, pageSize - insertion))
+        result.insert(contentsOf: suggestions.dropFirst(firstPageCount), at: firstCloud)
+        result.insert(contentsOf: suggestions.prefix(firstPageCount), at: insertion)
         return result
     }
 }
