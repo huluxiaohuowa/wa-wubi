@@ -34,6 +34,8 @@ targets:
         buildPhase: resources
       - path: Resources/GPL-3.0.txt
         buildPhase: resources
+      - path: Resources/Unicode-CLDR-LICENSE.txt
+        buildPhase: resources
       - path: Mobile/Resources
         buildPhase: resources
     dependencies:
@@ -61,6 +63,8 @@ targets:
       - path: Resources/LGPL-3.0.txt
         buildPhase: resources
       - path: Resources/GPL-3.0.txt
+        buildPhase: resources
+      - path: Resources/Unicode-CLDR-LICENSE.txt
         buildPhase: resources
       - path: Mobile/Resources
         buildPhase: resources

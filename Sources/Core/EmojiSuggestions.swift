@@ -83,6 +83,8 @@ enum EmojiSuggestions {
             ("⌨️", "键盘 鍵盤"),
             ("📷", "相机 相機 拍照 摄影 攝影"),
             ("🎵", "音乐 音樂 歌曲 音符"),
+            ("🪈", "笛子 笛 長笛 长笛 短笛"),
+            ("🎣", "钓鱼 釣魚 垂钓 垂釣"),
             ("📚", "书籍 書籍 读书 讀書"),
             ("💡", "灯泡 燈泡 灵感 靈感"),
             ("⏰", "闹钟 鬧鐘"),
@@ -103,6 +105,7 @@ enum EmojiSuggestions {
             ("🎾", "网球 網球"),
             ("🏓", "乒乓球"),
             ("🏊", "游泳"),
+            ("🤿", "潜水 潛水 水肺潜水 水肺潛水 浮潜 浮潛 自由潜水 自由潛水"),
             ("🏃", "跑步"),
             ("🎮", "游戏 遊戲 手柄")
         ]
@@ -130,7 +133,8 @@ enum EmojiSuggestions {
                 guard expandsExactMatches else { break }
                 guard candidate.source == nil, candidate.hint.isEmpty else { continue }
             }
-            guard let emoji = byWord[candidate.word], seen.insert(emoji).inserted,
+            let emoji = byWord[candidate.word] ?? EmojiAnnotations.emoji(for: candidate.word)
+            guard let emoji, seen.insert(emoji).inserted,
                   !candidates.contains(where: { $0.word == emoji }) else { continue }
             suggestions.append(Candidate(emoji, source: .emojiSuggestion))
         }

@@ -14,6 +14,7 @@ fi
 /usr/bin/unzip -oq Resources/WAWubiHan.zip -d "$app/Contents/Resources"
 /usr/bin/unzip -oq Resources/QingjianEnglishGlossary.zip -d "$app/Contents/Resources"
 cp Resources/QingjianEnglishGlossary-NOTICE.txt "$app/Contents/Resources/"
+cp Resources/Unicode-CLDR-LICENSE.txt "$app/Contents/Resources/"
 cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Resources/"
 compiler="$output/compile-mac-lexicon"
 xcrun --sdk macosx swiftc -O -module-cache-path "$output/clang" \
