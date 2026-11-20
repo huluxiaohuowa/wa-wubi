@@ -52,7 +52,7 @@ public struct Snapshot: Codable, Sendable {
     }
 
     public mutating func set(_ key: String, to value: Data?, device: String, at date: Date = Date()) {
-        let counter = values.values.map(\.revision.counter).max() ?? 0
+        let counter = values.values.lazy.map(\.revision.counter).max() ?? 0
         let previous = values[key]?.modifiedAt
         let timestamp = previous.map { max(date, $0) } ?? date
         values[key] = Change(revision: Revision(counter: counter + 1, device: device), value: value, modifiedAt: timestamp)

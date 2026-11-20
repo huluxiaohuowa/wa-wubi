@@ -16,7 +16,6 @@ import WubiCore
                 NavigationStack { MobileSettings(store: store) }
                     .tabItem { Label("设置", systemImage: "gearshape") }
             }
-            .task { await store.prepare() }
             .task(id: phase) {
                 guard phase == .active else { return }
                 store.reload()

@@ -384,6 +384,24 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(cleared.value)
     }
 
+    func testTouchLanguageKeyPreferencePersistsSeparatelyFromShift() throws {
+        var previous = Preferences()
+        previous.shiftSelectsCandidate = false
+        let oldData = try JSONEncoder().encode(previous)
+        let oldDevice = try JSONDecoder().decode(Preferences.self, from: oldData)
+        XCTAssertFalse(oldDevice.touchLanguageKeySelectsCandidate ?? false)
+
+        var updated = oldDevice
+        updated.touchLanguageKeySelectsCandidate = true
+        var snapshot = Snapshot()
+        try snapshot.updatePreferences(from: previous, to: updated, device: "local")
+        XCTAssertEqual(snapshot.values["pref/touchLanguageKeySelectsCandidate"]?.value, Data("true".utf8))
+        XCTAssertNil(snapshot.values["pref/shiftSelectsCandidate"])
+        let restored = try JSONDecoder().decode(Preferences.self, from: JSONEncoder().encode(updated))
+        XCTAssertEqual(restored.touchLanguageKeySelectsCandidate, true)
+        XCTAssertEqual(restored.shiftSelectsCandidate, false)
+    }
+
     func testLearnsPhraseOnlyAfterAbandoningMatchingCode() {
         let dictionary = Lexicon([Entry("微", "tmgt"), Entry("信", "wy"), Entry("信", "wyg"), Entry("心", "ny")])
         let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in dictionary.exact(code) }

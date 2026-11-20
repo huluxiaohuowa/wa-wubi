@@ -3,9 +3,21 @@ import SwiftUI
 import UIKit
 import WubiCore
 
-private enum KeyboardLayout {
-    static let compactKeyInset: CGFloat = 3
+enum KeyboardLayout {
+    static let wideWidth: CGFloat = 580
+    static let dockedHeight: CGFloat = 278
+    static let topPadding: CGFloat = 3
+    static let bottomPadding: CGFloat = 4
+    static let phoneBottomPadding: CGFloat = 1
+
+    @MainActor static func usesPhoneInsets(width: CGFloat, systemBackdrop: Bool) -> Bool {
+        systemBackdrop && width < wideWidth && UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    static let compactKeyInset: CGFloat = 2
+    static let compactVerticalKeyInset: CGFloat = 3.5
     static let compactCornerRadius: CGFloat = 7
+    static func candidateFontSize(_ size: Double) -> CGFloat { min(31, max(17, size + 3)) }
     static let rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
     static let upper = ["1234567890", "@#¥%&*-+=", "()!….,?"]
     static let numbers = [Array("1234567890"), Array("-/:;()¥@“”"), Array(".,\\?!·")]
@@ -26,9 +38,9 @@ struct KeyboardSurface<Globe: View>: View {
     let globe: () -> Globe
     var voice: ((Bool) -> Void)?
     var recording = false
-    var showGlobe = false
     var dockedHeight: CGFloat?
     var usesSystemBackdrop = false
+    var onDismissKeyboard: (() -> Void)?
     @State private var haptic = UIImpactFeedbackGenerator(style: .light)
     @State private var floatingOffset: CGSize = .zero
     @State private var slidingKey: Character?
@@ -50,8 +62,10 @@ struct KeyboardSurface<Globe: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let width = geometry.size.width
-            let wide = width >= 580
+            // The host can propose zero width while reconnecting the extension.
+            let width = max(2, geometry.size.width)
+            let wide = width >= KeyboardLayout.wideWidth
+            let phoneInsets = KeyboardLayout.usesPhoneInsets(width: width, systemBackdrop: usesSystemBackdrop)
             let floating = wide && session.compact
             let split = wide && !floating && store.splitWideKeyboard
             let panelWidth = floating ? 398 : width
@@ -63,7 +77,7 @@ struct KeyboardSurface<Globe: View>: View {
             let travel = CGSize(width: (width - panelWidth) / 2, height: geometry.size.height - panelHeight)
             let offset = floating ? boundedOffset(travel: travel, translation: dragOffset) : .zero
             VStack(spacing: 0) {
-                candidateBar(wide: wide, compact: compact)
+                candidateBar(wide: wide, showsBackground: floating || !usesSystemBackdrop)
                 if split && session.page != .emoji {
                     thumbKeyboard(width: contentWidth)
                 } else if session.page == .emoji {
@@ -76,13 +90,16 @@ struct KeyboardSurface<Globe: View>: View {
                 if floating { dragHandle(travel: travel) }
             }
             .padding(.horizontal, sideInset)
-            .padding(.top, 3)
-            .padding(.bottom, 4)
+            .padding(.top, phoneInsets ? 0 : KeyboardLayout.topPadding)
+            .padding(.bottom, phoneInsets ? KeyboardLayout.phoneBottomPadding : KeyboardLayout.bottomPadding)
             .frame(width: panelWidth, height: panelHeight)
             .background {
                 if floating || !usesSystemBackdrop {
                     keyboardBackdrop(floating: floating)
                 }
+            }
+            .overlayPreferenceValue(LetterKeyBounds.self) { anchor in
+                letterPreview(at: anchor)
             }
             .simultaneousGesture(MagnifyGesture().onEnded { value in
                 guard wide else { return }
@@ -93,6 +110,29 @@ struct KeyboardSurface<Globe: View>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .onChange(of: wide) { _, isWide in if !isWide { session.compact = false } }
         }
+    }
+
+    private func letterPreview(at anchor: Anchor<CGRect>?) -> some View {
+        GeometryReader { geometry in
+            if let anchor, let letter = slidingKey {
+                let bounds = geometry[anchor]
+                let width = max(48, bounds.width + 8)
+                let x = min(geometry.size.width - width / 2, max(width / 2, bounds.midX))
+                let y = max(25, bounds.minY - 20)
+                Text(session.uppercase ? String(letter).uppercased() : String(letter))
+                    .font(.system(size: 32, weight: .medium))
+                    .frame(width: width, height: 46)
+                    .background(keyColor, in: RoundedRectangle(cornerRadius: 11))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11).strokeBorder(keyBorder)
+                    }
+                    .shadow(color: .black.opacity(0.24), radius: 5, y: 2)
+                    .position(x: x, y: y)
+                    .transaction { $0.animation = nil }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func boundedOffset(travel: CGSize, translation: CGSize) -> CGSize {
@@ -134,10 +174,10 @@ struct KeyboardSurface<Globe: View>: View {
         .accessibilityHidden(true)
     }
 
-    private func candidateBar(wide: Bool, compact: Bool) -> some View {
+    private func candidateBar(wide: Bool, showsBackground: Bool) -> some View {
         let c = session.composition
         return HStack(spacing: 5) {
-            if showGlobe { globe().frame(width: 40, height: 40) }
+            if session.showGlobe { globe().frame(width: 40, height: 40) }
             if !c.code.isEmpty {
                 Text(c.code).font(.system(.caption, design: .monospaced, weight: .medium))
                     .foregroundStyle(.secondary).lineLimit(1).padding(.leading, 5)
@@ -155,27 +195,35 @@ struct KeyboardSurface<Globe: View>: View {
                 Button { session.key(.next) } label: { Image(systemName: "chevron.right") }
                     .disabled(c.page + 1 == c.pageCount).accessibilityLabel("下一页")
             }
-            if compact {
-                if c.code.isEmpty { emojiKey(chrome: true).frame(width: 39, height: 40) }
-                languageKey(chrome: true).frame(width: 39, height: 40)
-            }
             if wide {
                 functionKey(session.compact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left",
                             label: session.compact ? "恢复大键盘" : "缩成手机键盘") { session.compact.toggle() }
                     .frame(width: 38, height: 36)
             }
+            if let onDismissKeyboard {
+                Divider().frame(height: 24).accessibilityHidden(true)
+                Button(action: onDismissKeyboard) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 44, height: 43)
+                        .background(.primary.opacity(0.02), in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("收起键盘")
+            }
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 3)
         .frame(height: 43)
-        .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(c.code.isEmpty ? 0 : store.preferences.opacity * 0.55),
+        .background(Color(uiColor: .secondarySystemGroupedBackground)
+            .opacity(showsBackground && !c.code.isEmpty ? store.preferences.opacity * 0.55 : 0),
                     in: UnevenRoundedRectangle(topLeadingRadius: 19, bottomLeadingRadius: 9,
                                                bottomTrailingRadius: 9, topTrailingRadius: 19))
     }
 
     @ViewBuilder private func candidateScroll(_ composition: Composition) -> some View {
         let scroll = ScrollView(.horizontal) {
-            HStack(spacing: 3) { candidateItems(composition) }
+            HStack(spacing: 0) { candidateItems(composition) }
         }
         .scrollIndicators(.hidden)
         if #available(iOS 26.0, *) {
@@ -192,7 +240,7 @@ struct KeyboardSurface<Globe: View>: View {
                     let missing = MobileCandidateGlyphs.missingCodePoints(in: item.word)
                     if missing.isEmpty {
                         Text(item.word)
-                            .font(.system(size: min(28, max(14, store.preferences.fontSize)), weight: .medium))
+                            .font(.system(size: KeyboardLayout.candidateFontSize(store.preferences.fontSize), weight: .medium))
                     } else {
                         Text(missing.map { "U+" + String($0, radix: 16, uppercase: true) }.joined(separator: " "))
                             .font(.system(.caption, design: .monospaced))
@@ -200,12 +248,14 @@ struct KeyboardSurface<Globe: View>: View {
                     }
                     if !item.hint.isEmpty { Text(item.hint).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary) }
                 }
-                .padding(.horizontal, 8).frame(minHeight: 38)
+                .padding(.horizontal, 8)
+                .frame(minWidth: 44, minHeight: 43)
+                .contentShape(Rectangle())
                 .foregroundStyle(i == c.selected ? Color.accentColor : Color.primary)
             }
             .buttonStyle(.plain)
             .contextMenu {
-                if !item.isCloud {
+                if item.isDictionaryEditable {
                     Button("置顶") { store.candidateEdit(item.word, code: c.code, pinned: true); session.reset() }
                     Button("前移") {
                         let index = c.page * c.pageSize + i
@@ -228,7 +278,7 @@ struct KeyboardSurface<Globe: View>: View {
             Text(session.modeHint).font(.footnote).foregroundStyle(.secondary).padding(.leading, 8)
         }
         if !store.ready {
-            Text("正在准备码表…").foregroundStyle(.secondary).font(.footnote)
+            Text("无法读取 86 五笔码表").foregroundStyle(.secondary).font(.footnote)
         }
     }
 
@@ -245,21 +295,22 @@ struct KeyboardSurface<Globe: View>: View {
             ForEach(rows.indices, id: \.self) { index in
                 let row = rows[index]
                 let unit = width / 10
-                let edgeWidth = compact ? unit * 1.22 : 54
-                let thirdRowGap = compact && letters && index == 2 ? unit * 0.28 : 0
+                let edgeWidth = compact ? unit * (letters ? 1.5 : 1.22) : 54
+                let capInset = compact ? min(rowInset, KeyboardLayout.compactVerticalKeyInset) : rowInset
                 let horizontalInset = compact ? KeyboardLayout.compactKeyInset : 2.5
                 HStack(spacing: 0) {
                     if index == 2 {
-                        rowModeKey(letters: letters, horizontalInset: horizontalInset, rowInset: rowInset)
+                        rowModeKey(letters: letters, horizontalInset: horizontalInset, rowInset: capInset)
                             .frame(width: edgeWidth)
-                        if thirdRowGap > 0 { Color.clear.frame(width: thirdRowGap).allowsHitTesting(false) }
                     }
-                    keys(row, range: row.indices, index: index, letters: letters,
-                         keyWidth: compact && letters ? unit : nil, slides: compact && store.slideCorrection,
-                         horizontalInset: horizontalInset, rowInset: rowInset, titleSize: compact ? 24 : 22)
+                    if compact && letters {
+                        compactLetterRow(row, index: index, unit: unit, rowInset: capInset)
+                    } else {
+                        keys(row, range: row.indices, index: index, letters: letters,
+                             horizontalInset: horizontalInset, rowInset: capInset, titleSize: compact ? 24 : 22)
+                    }
                     if index == 2 {
-                        if thirdRowGap > 0 { Color.clear.frame(width: thirdRowGap).allowsHitTesting(false) }
-                        functionKey("delete.left", label: "删除", horizontalInset: horizontalInset, rowInset: rowInset) {
+                        functionKey("delete.left", label: "删除", horizontalInset: horizontalInset, rowInset: capInset) {
                             session.key(.backspace)
                         }
                         .frame(width: edgeWidth)
@@ -268,6 +319,35 @@ struct KeyboardSurface<Globe: View>: View {
                 .padding(.horizontal, !compact && letters && index == 1 ? 18 : 0)
                 .frame(maxWidth: .infinity)
                 .frame(maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func compactLetterRow(_ row: [Character], index: Int, unit: CGFloat, rowInset: CGFloat) -> some View {
+        let alternates = Array(KeyboardLayout.upper[index])
+        return HStack(spacing: 0) {
+            ForEach(row.indices, id: \.self) { i in
+                let letter = row[i]
+                let alternate = alternates[i]
+                let title = session.uppercase ? String(letter).uppercased() : String(letter)
+                let highlighted = slidingKey == letter
+                TouchKey(title: title, alternate: punctuationLabel(alternate), color: keyColor, border: keyBorder,
+                         highlighted: highlighted, fadesOnRelease: slidingKey == nil,
+                         horizontalInset: KeyboardLayout.compactKeyInset, rowInset: rowInset,
+                         titleSize: 24, handlesTouch: false) { kind, fraction in
+                    sendLetter(row, at: i, in: row.indices, alternate: alternate, kind: kind, fraction: fraction)
+                }
+                .frame(width: unit)
+                .anchorPreference(key: LetterKeyBounds.self, value: .bounds) { highlighted ? $0 : nil }
+            }
+        }
+        .overlay {
+            LetterRowTouch(keyCount: row.count, slides: store.slideCorrection) { target in
+                let letter = target.map { row[$0] }
+                if slidingKey != letter { slidingKey = letter }
+            } action: { kind, origin, fraction, target in
+                sendLetter(row, at: target ?? origin, in: row.indices, alternate: alternates[origin],
+                           kind: kind, fraction: target == nil ? fraction : 0.5)
             }
         }
     }
@@ -347,7 +427,7 @@ struct KeyboardSurface<Globe: View>: View {
             ForEach(KeyboardLayout.keypad.indices, id: \.self) { index in
                 HStack(spacing: 0) {
                     ForEach(KeyboardLayout.keypad[index], id: \.self) { character in
-                        TouchKey(title: String(character), color: keyColor, border: keyBorder) { _, _, _ in
+                        TouchKey(title: String(character), color: keyColor, border: keyBorder) { _, _ in
                             tapFeedback()
                             session.literal(String(character))
                         }
@@ -369,7 +449,7 @@ struct KeyboardSurface<Globe: View>: View {
     }
 
     private func keys(_ row: [Character], range: Range<Int>, index: Int, letters: Bool,
-                      keyWidth: CGFloat? = nil, slides: Bool = false,
+                      keyWidth: CGFloat? = nil,
                       horizontalInset: CGFloat = 2.5, rowInset: CGFloat = 3, titleSize: CGFloat = 22) -> some View {
         ForEach(Array(range), id: \.self) { i in
             let letter = row[i]
@@ -377,37 +457,37 @@ struct KeyboardSurface<Globe: View>: View {
             let name = letters && session.uppercase ? String(letter).uppercased()
                 : usesPunctuationMapping ? punctuationLabel(letter) : String(letter)
             let alternate = letters ? Array(KeyboardLayout.upper[index])[i] : nil
-            let slideBounds = letters && slides ? (range.lowerBound - i)...(range.upperBound - i - 1) : nil
             TouchKey(title: name, alternate: alternate.map(punctuationLabel), holdLabel: letters ? String(letter).uppercased() : nil,
-                     color: keyColor, border: keyBorder, slideBounds: slideBounds, highlighted: slidingKey == letter,
-                     fadesOnRelease: slidingKey == nil, horizontalInset: horizontalInset, rowInset: rowInset,
-                     titleSize: titleSize, preview: { offset in slidingKey = offset.map { row[i + $0] } }) { kind, fraction, offset in
-                tapFeedback()
-                guard letters else {
-                    if usesPunctuationMapping, !letter.isNumber, !session.composition.english {
-                        session.key(.punctuation(letter))
-                    } else {
-                        session.literal(String(letter))
-                    }
+                     color: keyColor, border: keyBorder, horizontalInset: horizontalInset, rowInset: rowInset,
+                     titleSize: titleSize) { kind, fraction in
+                if let alternate {
+                    sendLetter(row, at: i, in: range, alternate: alternate, kind: kind, fraction: fraction)
                     return
                 }
-                if kind == .up, let alternate {
-                    if alternate.isNumber || session.composition.english {
-                        session.literal(String(alternate))
-                    } else {
-                        session.key(.punctuation(alternate))
-                    }
-                } else if kind == .held {
-                    session.literal(String(letter).uppercased())
-                } else if let offset {
-                    session.letter(row[i + offset], neighbour: nil)
+                tapFeedback()
+                if usesPunctuationMapping, !letter.isNumber, !session.composition.english {
+                    session.key(.punctuation(letter))
                 } else {
-                    let adjacent = fraction < 0.19 ? i - 1 : (fraction > 0.81 ? i + 1 : i)
-                    let neighbour = range.contains(adjacent) && adjacent != i ? row[adjacent] : nil
-                    session.letter(letter, neighbour: neighbour)
+                    session.literal(String(letter))
                 }
             }
             .frame(width: keyWidth)
+        }
+    }
+
+    private func sendLetter(_ row: [Character], at index: Int, in range: Range<Int>, alternate: Character,
+                            kind: TouchKey.Kind, fraction: CGFloat) {
+        tapFeedback()
+        switch kind {
+        case .up:
+            if alternate.isNumber || session.composition.english { session.literal(String(alternate)) }
+            else { session.key(.punctuation(alternate)) }
+        case .held:
+            session.literal(String(row[index]).uppercased())
+        case .tap:
+            let adjacent = fraction < 0.19 ? index - 1 : (fraction > 0.81 ? index + 1 : index)
+            let neighbour = range.contains(adjacent) && adjacent != index ? row[adjacent] : nil
+            session.letter(row[index], neighbour: neighbour)
         }
     }
 
@@ -419,9 +499,13 @@ struct KeyboardSurface<Globe: View>: View {
     private func toolbar(width: CGFloat, compact: Bool, rowInset: CGFloat) -> some View {
         HStack(spacing: compact ? 0 : 4) {
             if compact {
-                let sideWidth = min(width * 0.24, voice == nil ? 112 : 90)
-                pageKey(horizontalInset: KeyboardLayout.compactKeyInset, rowInset: rowInset).frame(width: sideWidth)
-                spaceKey(horizontalInset: KeyboardLayout.compactKeyInset, rowInset: rowInset)
+                let inset = KeyboardLayout.compactKeyInset
+                let sideWidth = min(width * 0.15, 64)
+                let utilityWidth = min(width * 0.11, 46)
+                pageKey(horizontalInset: inset, rowInset: rowInset).frame(width: sideWidth)
+                languageKey(horizontalInset: inset, rowInset: rowInset).frame(width: utilityWidth)
+                spaceKey(horizontalInset: inset, rowInset: rowInset)
+                emojiKey(horizontalInset: inset, rowInset: rowInset).frame(width: utilityWidth)
                 if let voice {
                     VoiceHoldButton(active: recording, onHold: voice)
                         .frame(width: 38).padding(.vertical, rowInset)
@@ -430,7 +514,7 @@ struct KeyboardSurface<Globe: View>: View {
                     functionKey("delete.left", label: "删除", rowInset: rowInset) { session.key(.backspace) }
                         .frame(width: 40)
                 }
-                functionKey("return", label: "回车", horizontalInset: KeyboardLayout.compactKeyInset, rowInset: rowInset) {
+                functionKey("return", label: "回车", horizontalInset: inset, rowInset: rowInset) {
                     session.key(.returnKey)
                 }
                 .frame(width: sideWidth)
@@ -462,18 +546,20 @@ struct KeyboardSurface<Globe: View>: View {
         }
     }
 
-    private var emojiKey: some View { emojiKey(chrome: false) }
+    private var emojiKey: some View { emojiKey(horizontalInset: 0, rowInset: 0) }
 
-    private func emojiKey(chrome: Bool) -> some View {
-        functionKey("face.smiling", label: session.page == .emoji ? "返回字母" : "表情", chrome: chrome) {
+    private func emojiKey(horizontalInset: CGFloat, rowInset: CGFloat) -> some View {
+        functionKey("face.smiling", label: session.page == .emoji ? "返回字母" : "表情",
+                    horizontalInset: horizontalInset, rowInset: rowInset) {
             session.page = session.page == .emoji ? .letters : .emoji
         }
     }
 
-    private var languageKey: some View { languageKey(chrome: false) }
+    private var languageKey: some View { languageKey(horizontalInset: 0, rowInset: 0) }
 
-    private func languageKey(chrome: Bool) -> some View {
-        functionKey(session.composition.english ? "英" : "中", label: "切换中英文", symbol: false, chrome: chrome) {
+    private func languageKey(horizontalInset: CGFloat, rowInset: CGFloat) -> some View {
+        functionKey(session.composition.english ? "英" : "中", label: "切换中英文", symbol: false,
+                    horizontalInset: horizontalInset, rowInset: rowInset) {
             session.toggleLanguage()
         }
         .accessibilityValue(session.composition.english ? "英文" : "中文")
@@ -502,7 +588,7 @@ struct KeyboardSurface<Globe: View>: View {
         }
     }
 
-    private func functionKey(_ title: String, label: String, symbol: Bool = true, chrome: Bool = false,
+    private func functionKey(_ title: String, label: String, symbol: Bool = true,
                              horizontalInset: CGFloat = 0, rowInset: CGFloat = 0, action: @escaping () -> Void) -> some View {
         Button {
             tapFeedback()
@@ -512,11 +598,9 @@ struct KeyboardSurface<Globe: View>: View {
                 if symbol { Image(systemName: title) }
                 else { Text(title).monospacedDigit() }
             }
-            .font(.system(size: chrome || horizontalInset > 0 ? 16 : 13, weight: .medium))
+            .font(.system(size: horizontalInset > 0 ? 16 : 13, weight: .medium))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                if !chrome { KeyCap(color: functionColor, border: keyBorder) }
-            }
+            .background { KeyCap(color: functionColor, border: keyBorder) }
             .padding(.horizontal, horizontalInset)
             .padding(.vertical, rowInset)
             .contentShape(Rectangle())
@@ -594,6 +678,94 @@ private struct KeyPressHighlight: View {
     }
 }
 
+private struct LetterKeyBounds: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+private struct LetterRowTouch: UIViewRepresentable {
+    let keyCount: Int
+    let slides: Bool
+    let preview: (Int?) -> Void
+    let action: (TouchKey.Kind, Int, CGFloat, Int?) -> Void
+
+    func makeUIView(context: Context) -> LetterRowTouchView {
+        let view = LetterRowTouchView()
+        view.isOpaque = false
+        // A fully transparent row can leave keycap gaps untouchable in the hosted keyboard.
+        view.backgroundColor = UIColor(white: 0, alpha: 0.02)
+        return view
+    }
+
+    func updateUIView(_ view: LetterRowTouchView, context: Context) {
+        view.keyCount = keyCount
+        view.slides = slides
+        view.preview = preview
+        view.action = action
+    }
+}
+
+private final class LetterRowTouchView: UIView {
+    var keyCount = 1
+    var slides = false
+    var preview: (Int?) -> Void = { _ in }
+    var action: (TouchKey.Kind, Int, CGFloat, Int?) -> Void = { _, _, _, _ in }
+    private var firstTouch: UITouch?
+    private var start = CGPoint.zero
+    private var startedAt: TimeInterval = 0
+    private var unit: CGFloat { max(1, bounds.width / CGFloat(keyCount)) }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard firstTouch == nil, let touch = touches.first else { return }
+        firstTouch = touch
+        start = touch.location(in: self)
+        startedAt = touch.timestamp
+        preview(key(at: start.x))
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = firstTouch, touches.contains(touch) else { return }
+        let point = touch.location(in: self)
+        preview(projectedKey(at: point) ?? (point.y - start.y < -14 ? nil : key(at: start.x)))
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = firstTouch, touches.contains(touch) else { return }
+        firstTouch = nil
+        preview(nil)
+        let point = touch.location(in: self)
+        let origin = key(at: start.x)
+        let fraction = start.x / unit - CGFloat(origin)
+        if let target = projectedKey(at: point) {
+            action(.tap, origin, fraction, target)
+        } else if point.y - start.y < -14 {
+            action(.up, origin, fraction, nil)
+        } else if abs(point.x - start.x) < 21, point.y - start.y < 20 {
+            let held = touch.timestamp - startedAt >= 0.42
+            action(held ? .held : .tap, origin, fraction, nil)
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = firstTouch, touches.contains(touch) else { return }
+        firstTouch = nil
+        preview(nil)
+    }
+
+    private func key(at x: CGFloat) -> Int {
+        min(keyCount - 1, max(0, Int(floor(x / unit))))
+    }
+
+    private func projectedKey(at point: CGPoint) -> Int? {
+        let horizontal = abs(point.x - start.x)
+        guard slides, horizontal >= 7, horizontal > abs(point.y - start.y) * 1.15 else { return nil }
+        return key(at: point.x)
+    }
+}
+
 private struct TouchKey: View {
     enum Kind { case tap, up, held }
     var title: String
@@ -601,14 +773,13 @@ private struct TouchKey: View {
     var holdLabel: String?
     var color: Color
     var border: Color
-    var slideBounds: ClosedRange<Int>?
     var highlighted = false
     var fadesOnRelease = true
     var horizontalInset: CGFloat = 2.5
     var rowInset: CGFloat = 3
     var titleSize: CGFloat = 22
-    var preview: (Int?) -> Void = { _ in }
-    var action: (Kind, CGFloat, Int?) -> Void
+    var handlesTouch = true
+    var action: (Kind, CGFloat) -> Void
     @State private var start: Date?
     @GestureState private var tracking = false
 
@@ -626,54 +797,43 @@ private struct TouchKey: View {
                 KeyCap(color: color, border: border)
             }
             .overlay {
-                KeyPressHighlight(pressed: slideBounds == nil ? tracking : highlighted,
+                KeyPressHighlight(pressed: handlesTouch ? tracking : highlighted,
                                   fadesOnRelease: fadesOnRelease)
             }
             .padding(.horizontal, horizontalInset).padding(.vertical, rowInset)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .updating($tracking) { _, tracking, _ in tracking = true }
-                .onChanged { value in
-                    if start == nil { start = Date() }
-                    if slideBounds != nil {
-                        preview(projectedKey(value, width: geometry.size.width) ?? 0)
-                    }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .overlay {
+                if handlesTouch {
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0)
+                            .updating($tracking) { _, tracking, _ in tracking = true }
+                            .onChanged { value in
+                                if start == nil { start = Date() }
+                            }
+                            .onEnded { value in
+                                let elapsed = start.map { Date().timeIntervalSince($0) } ?? 0
+                                let x = value.startLocation.x / max(1, geometry.size.width)
+                                if value.translation.height < -14 {
+                                    action(.up, x)
+                                } else if abs(value.translation.width) < 21, value.translation.height < 20 {
+                                    action(elapsed >= 0.42 ? .held : .tap, x)
+                                }
+                            })
                 }
-                .onEnded { value in
-                    let elapsed = start.map { Date().timeIntervalSince($0) } ?? 0
-                    let x = value.startLocation.x / max(1, geometry.size.width)
-                    if let offset = projectedKey(value, width: geometry.size.width) {
-                        action(.tap, x, offset)
-                    } else if value.translation.height < -14 {
-                        action(.up, x, nil)
-                    }
-                    else if abs(value.translation.width) < 21, value.translation.height < 20 {
-                        action(elapsed >= 0.42 ? .held : .tap, x, nil)
-                    }
-                })
+            }
             .onChange(of: tracking) { _, active in
-                if !active {
-                    start = nil
-                    if slideBounds != nil { preview(nil) }
-                }
+                if !active { start = nil }
             }
             .accessibilityElement()
             .accessibilityLabel(title)
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction { action(.tap, 0.5, nil) }
+            .accessibilityAction { action(.tap, 0.5) }
             .accessibilityAction(named: Text(alternate ?? holdLabel ?? title)) {
-                action(alternate == nil ? .held : .up, 0.5, nil)
+                action(alternate == nil ? .held : .up, 0.5)
             }
         }
     }
 
-    private func projectedKey(_ value: DragGesture.Value, width: CGFloat) -> Int? {
-        guard let slideBounds, width > 0 else { return nil }
-        let horizontal = abs(value.translation.width)
-        guard horizontal >= 7, horizontal > abs(value.translation.height) * 1.15 else { return nil }
-        let index = Int(floor(value.location.x / width))
-        return min(slideBounds.upperBound, max(slideBounds.lowerBound, index))
-    }
 }
 
 private struct SpaceKey: View {

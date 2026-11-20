@@ -2,11 +2,24 @@ import SwiftUI
 import UIKit
 
 @MainActor final class KeyboardViewController: UIInputViewController {
-    private let store = MobileStore(loadSnapshotImmediately: false)
+    private static let sharedStore = MobileStore(loadSnapshotImmediately: false, keepsLibraryLists: false)
+    private var store: MobileStore { Self.sharedStore }
     private lazy var session = KeyboardSession(store: store)
-    private var host: UIHostingController<KeyboardSurface<InputModeButton>>?
-    private var loading = false
     private var editingDocument = false
+    private var heightConstraint: NSLayoutConstraint?
+
+    private var usesSystemBackdrop: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    private var dockedHeight: CGFloat {
+        guard KeyboardLayout.usesPhoneInsets(width: view.bounds.width, systemBackdrop: usesSystemBackdrop) else {
+            return KeyboardLayout.dockedHeight
+        }
+        return KeyboardLayout.dockedHeight - KeyboardLayout.topPadding
+            - KeyboardLayout.bottomPadding + KeyboardLayout.phoneBottomPadding
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -21,13 +34,12 @@ import UIKit
             UIDevice.current.playInputClick()
         }
 
-        let usesSystemBackdrop: Bool
-        if #available(iOS 26.0, *) { usesSystemBackdrop = true } else { usesSystemBackdrop = false }
         let content = KeyboardSurface(session: session, store: store,
                                       globe: { [weak self] in InputModeButton(controller: self) },
-                                      showGlobe: needsInputModeSwitchKey, usesSystemBackdrop: usesSystemBackdrop)
+                                      dockedHeight: KeyboardLayout.dockedHeight, usesSystemBackdrop: usesSystemBackdrop,
+                                      onDismissKeyboard: { [weak self] in self?.dismissKeyboard() })
         let host = UIHostingController(rootView: content)
-        self.host = host
+        host.safeAreaRegions = []
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
         host.view.backgroundColor = .clear
@@ -38,27 +50,25 @@ import UIKit
             host.view.topAnchor.constraint(equalTo: view.topAnchor),
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        let height = view.heightAnchor.constraint(equalToConstant: 278)
+        let height = view.heightAnchor.constraint(equalToConstant: dockedHeight)
         height.priority = .init(900)
         height.isActive = true
+        heightConstraint = height
         host.didMove(toParent: self)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        guard !loading else { return }
-        loading = true
-        Task { [weak self, store] in
-            await store.reloadForKeyboard()
-            await store.prepare()
-            self?.loading = false
-        }
+        Task { [store] in await store.prepareForKeyboard() }
     }
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
-        if let host, host.rootView.showGlobe != needsInputModeSwitchKey {
-            host.rootView.showGlobe = needsInputModeSwitchKey
+        if view.window != nil {
+            let height = dockedHeight
+            if heightConstraint?.constant != height { heightConstraint?.constant = height }
+            let showGlobe = needsInputModeSwitchKey
+            if session.showGlobe != showGlobe { session.showGlobe = showGlobe }
         }
     }
 

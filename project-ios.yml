@@ -28,8 +28,6 @@ targets:
       - path: Mobile/App/PrivacyInfo.xcprivacy
         buildPhase: resources
       - Mobile/Shared
-      - path: Resources/wubi86.dict.yaml
-        buildPhase: resources
       - path: Resources/LGPL-3.0.txt
         buildPhase: resources
       - path: Resources/GPL-3.0.txt
@@ -58,8 +56,6 @@ targets:
       - path: Mobile/Keyboard/PrivacyInfo.xcprivacy
         buildPhase: resources
       - Mobile/Shared
-      - path: Resources/wubi86.dict.yaml
-        buildPhase: resources
       - path: Resources/LGPL-3.0.txt
         buildPhase: resources
       - path: Resources/GPL-3.0.txt
@@ -70,6 +66,22 @@ targets:
         buildPhase: resources
     dependencies:
       - target: WubiCore
+    postBuildScripts:
+      - name: Compile keyboard dictionary
+        inputFiles:
+          - $(SRCROOT)/Resources/wubi86.dict.yaml
+          - $(SRCROOT)/Sources/Core/Lexicon.swift
+          - $(SRCROOT)/Sources/Core/LexiconDatabase.swift
+          - $(SRCROOT)/script/compile_mobile_lexicon.swift
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/wubi86.sqlite
+        script: |
+          set -eu
+          compiler="$DERIVED_FILE_DIR/compile-mobile-lexicon"
+          mkdir -p "$DERIVED_FILE_DIR" "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+          xcrun --sdk macosx swiftc -O -target "$(uname -m)-apple-macosx13.0" \
+              "$SCRIPT_INPUT_FILE_1" "$SCRIPT_INPUT_FILE_2" "$SCRIPT_INPUT_FILE_3" -o "$compiler"
+          "$compiler" "$SCRIPT_INPUT_FILE_0" "$SCRIPT_OUTPUT_FILE_0"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: top.fuluwa.inputmethod.Wubi86.ios.keyboard

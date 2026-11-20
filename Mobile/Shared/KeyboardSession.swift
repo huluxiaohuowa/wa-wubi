@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import WubiCore
 
@@ -9,6 +10,7 @@ import WubiCore
     @Published var page: Page = .letters
     @Published private(set) var shiftState: ShiftState = .off
     @Published var compact = false
+    @Published var showGlobe = false
     @Published private(set) var correction: Candidate?
     @Published private(set) var modeHint = ""
     var insert: (String) -> Void = { _ in }
@@ -24,10 +26,16 @@ import WubiCore
     private var precedingText = ""
     private var hintTask: Task<Void, Never>?
     private var lastShiftTap: TimeInterval = -.infinity
+    private var lookupObserver: AnyCancellable?
 
     var uppercase: Bool { shiftState != .off }
 
-    init(store: MobileStore) { self.store = store }
+    init(store: MobileStore) {
+        self.store = store
+        lookupObserver = store.$lookupRevision.dropFirst().sink { [weak self] _ in
+            self?.refreshCandidates()
+        }
+    }
 
     func letter(_ value: Character, neighbour: Character?) {
         if uppercase {
@@ -107,8 +115,10 @@ import WubiCore
         shiftState = .off
         page = .letters
         learning.reset()
-        if physicalShift { commit(composition.shiftToggleEnglish(selectsCandidate: store.preferences.shiftSelectsCandidate ?? false)) }
-        else { commit(composition.toggleEnglish()) }
+        let selectsCandidate = physicalShift
+            ? store.preferences.shiftSelectsCandidate
+            : store.preferences.touchLanguageKeySelectsCandidate
+        commit(composition.shiftToggleEnglish(selectsCandidate: selectsCandidate ?? false))
         clearLearningContext()
         if store.preferences.modeHints {
             modeHint = composition.english ? "英文" : store.preferences.inputScheme.title
@@ -188,9 +198,9 @@ import WubiCore
         cloudTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(650))
-                guard let self, self.hasFullAccess(), MobileCloudPrediction.current == config else { return }
+                guard self?.hasFullAccess() == true, MobileCloudPrediction.current == config else { return }
                 let words = try await config.suggestions(input)
-                guard !Task.isCancelled, self.hasFullAccess(), MobileCloudPrediction.current == config,
+                guard let self, !Task.isCancelled, self.hasFullAccess(), MobileCloudPrediction.current == config,
                       self.composition.mode == mode, self.composition.code == code,
                       !self.store.preferences.singleCharacters else { return }
                 self.cloudCandidates = words.map { Candidate($0, hint: "云联想", source: .cloud) }

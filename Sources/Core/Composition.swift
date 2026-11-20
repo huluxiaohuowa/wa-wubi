@@ -58,6 +58,7 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var vertical = false
     public var shiftToggle = true
     public var shiftSelectsCandidate: Bool?
+    public var touchLanguageKeySelectsCandidate: Bool?
     public var semicolonSelect = true
     public var apostropheSelect = true
     public var autoCommit = false

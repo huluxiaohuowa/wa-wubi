@@ -18,6 +18,13 @@ struct MobileSettings: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section {
+                Picker("屏幕中英键切换时上屏", selection: Binding(
+                    get: { store.preferences.touchLanguageKeySelectsCandidate ?? false },
+                    set: { value in store.updatePreferences { $0.touchLanguageKeySelectsCandidate = value } }
+                )) {
+                    Text("原始编码").tag(false)
+                    Text("首选词").tag(true)
+                }
                 Toggle("按键平移校正", isOn: $store.slideCorrection)
                 Toggle("空码就近纠正", isOn: $store.touchCorrection)
                 Toggle("大屏键盘左右分区", isOn: $store.splitWideKeyboard)
@@ -89,7 +96,7 @@ struct MobileSettings: View {
             Section("候选栏外观") {
                 LabeledContent("主题", value: "跟随系统")
                 VStack(alignment: .leading) {
-                    Text("字号 \(Int(store.preferences.fontSize))")
+                    Text("字号 \(Int(KeyboardLayout.candidateFontSize(store.preferences.fontSize)))")
                     Slider(value: binding(\.fontSize), in: 14...28, step: 1)
                 }
                 VStack(alignment: .leading) {

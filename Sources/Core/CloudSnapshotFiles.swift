@@ -66,8 +66,10 @@ public enum CloudSnapshotFiles {
             snapshot.merge(legacy)
             let parts = try dictionaryParts(in: folder)
             for part in parts {
-                let dictionary = try coordinate(part.url(in: folder)) { try readFile($0, as: part) }
-                snapshot.merge(dictionary.merged)
+                try autoreleasepool {
+                    let dictionary = try coordinate(part.url(in: folder)) { try readFile($0, as: part) }
+                    snapshot.merge(dictionary.merged)
+                }
             }
             return settings.current != nil || !snapshot.values.isEmpty || !parts.isEmpty ? snapshot : nil
         }
@@ -95,16 +97,18 @@ public enum CloudSnapshotFiles {
             var removed: [Part: Snapshot] = [:]
             for part in dictionaries {
                 let desired = parts[part] ?? Snapshot()
-                let synced = try coordinate(part.url(in: folder), writing: true) { url in
-                    let onDisk = try readFile(url, as: part)
-                    var combined = onDisk.merged
-                    combined.merge(desired)
-                    if let key = part.groupKey, let change = combined.values[key], change.value == nil {
-                        if onDisk.current != nil || !onDisk.conflicts.isEmpty { removed[part] = combined }
+                let synced = try autoreleasepool {
+                    try coordinate(part.url(in: folder), writing: true) { url in
+                        let onDisk = try readFile(url, as: part)
+                        var combined = onDisk.merged
+                        combined.merge(desired)
+                        if let key = part.groupKey, let change = combined.values[key], change.value == nil {
+                            if onDisk.current != nil || !onDisk.conflicts.isEmpty { removed[part] = combined }
+                            return combined
+                        }
+                        try commit(combined, replacing: onDisk, at: url, as: part, canWrite: canWrite)
                         return combined
                     }
-                    try commit(combined, replacing: onDisk, at: url, as: part, canWrite: canWrite)
-                    return combined
                 }
                 result.merge(synced)
             }
