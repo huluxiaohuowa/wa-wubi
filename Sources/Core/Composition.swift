@@ -114,6 +114,7 @@ public struct Composition {
     public private(set) var candidates: [Candidate] = []
     public private(set) var last = ""
     public private(set) var english = false
+    private var emptyCodeFallbackLength: Int?
     private var openDouble = true
     private var openSingle = true
     public private(set) var pageSize = 9
@@ -126,6 +127,7 @@ public struct Composition {
     public mutating func reset() {
         code = ""
         mode = .wubi
+        emptyCodeFallbackLength = nil
         page = 0
         selected = 0
         candidates = []
@@ -187,6 +189,10 @@ public struct Composition {
             if code.isEmpty { reset() }
             else {
                 code.removeLast()
+                if let fallbackLength = emptyCodeFallbackLength, code.count <= fallbackLength {
+                    mode = .wubi
+                    emptyCodeFallbackLength = nil
+                }
                 page = 0
                 selected = 0
                 refresh(lookup)
@@ -266,6 +272,7 @@ public struct Composition {
             var prefix = Result()
             if mode == .wubi, code.count == 4, !preferences.mixedPinyin || !candidates.isEmpty {
                 if candidates.isEmpty, preferences.emptyToEnglish {
+                    emptyCodeFallbackLength = code.count
                     mode = .english
                     code.append(character)
                     return Result()

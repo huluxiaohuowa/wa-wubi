@@ -7,6 +7,31 @@ final class CoreTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Resources/wubi86.dict.yaml"), encoding: .utf8))
 
+    #if os(macOS)
+    func testCompiledLexiconPreservesCandidatesAndLearningCodes() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let source = Lexicon([
+            Entry("你", "wq", weight: 5), Entry("您", "wq", weight: 5),
+            Entry("你", "wqiy", weight: 2), Entry("好", "vb", weight: 3),
+            Entry("你好", "wqvb", weight: 4), Entry("您", "wqin", weight: 2)
+        ], stems: ["好": "vbg"])
+        try source.writeCompiledDatabase(to: url)
+        let compiled = try XCTUnwrap(Lexicon(compiledAt: url))
+
+        XCTAssertEqual(compiled.exact("wq"), source.exact("wq"))
+        XCTAssertEqual(compiled.exact("wq", includeContinuations: false).map(\.word), ["你", "您"])
+        let edits = ["你": WordEdit("你", hidden: true), "好": WordEdit("好", pinned: true)]
+        XCTAssertEqual(compiled.exact("wq", extra: [Entry("个人词", "wq")], edits: edits),
+                       source.exact("wq", extra: [Entry("个人词", "wq")], edits: edits))
+        XCTAssertEqual(compiled.existingCode(for: "你"), "wqiy")
+        XCTAssertEqual(compiled.fullCode(for: "你好"), "wqvb")
+        XCTAssertEqual(compiled.pinyinIndex(), source.pinyinIndex())
+        XCTAssertEqual(compiled.compiledPinyinCandidates(for: "ni"), source.pinyinIndex()["ni"])
+        XCTAssertTrue(compiled.compiledPinyinCandidates(for: "not-a-spelling").isEmpty)
+    }
+    #endif
+
     func testKeyNameOrderingAndSemicolon() {
         XCTAssertEqual(Lexicon.roots.count, 25)
         let keys: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
@@ -65,6 +90,60 @@ final class CoreTests: XCTestCase {
             XCTAssertEqual(result.selections.first?.code, code)
             XCTAssertEqual(result.selections.first?.word, expected)
         }
+    }
+
+    func testDeletingEmptyCodeEnglishFallbackRestoresWubiCandidates() throws {
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
+        var preferences = Preferences()
+        preferences.emptyToEnglish = true
+        preferences.fifthKeyCommits = true
+        var state = Composition()
+        let mistyped = "kkskskskskskssk"
+        let expected = try XCTUnwrap(lexicon.exact("kk").first)
+
+        for letter in mistyped {
+            _ = state.handle(.letter(letter), preferences: preferences, lookup: lookup)
+        }
+        XCTAssertEqual(state.code, mistyped)
+        XCTAssertEqual(state.mode, .english)
+        XCTAssertTrue(state.candidates.isEmpty)
+
+        for length in stride(from: mistyped.count - 1, through: 1, by: -1) {
+            XCTAssertTrue(state.handle(.backspace, preferences: preferences, lookup: lookup).handled)
+            let prefix = String(mistyped.prefix(length))
+            XCTAssertEqual(state.code, prefix)
+            if length > 4 {
+                XCTAssertEqual(state.mode, .english)
+                XCTAssertTrue(state.candidates.isEmpty)
+            } else {
+                XCTAssertEqual(state.mode, .wubi)
+                XCTAssertEqual(state.candidates, lexicon.exact(prefix), prefix)
+            }
+        }
+
+        XCTAssertTrue(state.handle(.backspace, preferences: preferences, lookup: lookup).handled)
+        XCTAssertFalse(state.active)
+        for letter in "kk" {
+            _ = state.handle(.letter(letter), preferences: preferences, lookup: lookup)
+        }
+        XCTAssertEqual(state.visible.first, expected)
+    }
+
+    func testFifthKeyStillCommitsRawEmptyCode() {
+        let lookup: (Composition.Mode, String) -> [Candidate] = { _, code in self.lexicon.exact(code) }
+        var preferences = Preferences()
+        preferences.fifthKeyCommits = true
+        var state = Composition()
+        for letter in "kksk" {
+            XCTAssertTrue(state.handle(.letter(letter), preferences: preferences, lookup: lookup).text.isEmpty)
+        }
+        XCTAssertEqual(state.code, "kksk")
+        XCTAssertTrue(state.candidates.isEmpty)
+
+        let result = state.handle(.letter("s"), preferences: preferences, lookup: lookup)
+        XCTAssertEqual(result.text, "kksk")
+        XCTAssertEqual(state.code, "s")
+        XCTAssertEqual(state.candidates, lexicon.exact("s"))
     }
 
     func testContinuousPhraseLearningUsesFullCodesAndWholeCommittedWords() {

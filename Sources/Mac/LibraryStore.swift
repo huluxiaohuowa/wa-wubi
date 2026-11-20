@@ -28,6 +28,7 @@ final class LibraryStore: ObservableObject {
         }
     }
     private(set) var lexicon = Lexicon([])
+    private var usesCompiledLexicon = false
     private var pinyin: [String: [Candidate]] = [:]
     private var pinyinLoading = false
     private var pinyinCallbacks: [() -> Void] = []
@@ -62,13 +63,16 @@ final class LibraryStore: ObservableObject {
         reload()
         migrateLocalPreferences(defaults)
         DispatchQueue.global(qos: .userInitiated).async {
-            let url = Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml")
-            let text = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-            let lexicon = Lexicon.bundled(text)
+            let compiled = Bundle.main.url(forResource: "wubi86", withExtension: "sqlite")
+                .flatMap { Lexicon(compiledAt: $0) }
+            let fallbackText = compiled == nil ? Bundle.main.url(forResource: "wubi86.dict", withExtension: "yaml")
+                .flatMap { try? String(contentsOf: $0, encoding: .utf8) } : nil
+            let lexicon = compiled ?? Lexicon.bundled(fallbackText ?? "")
             DispatchQueue.main.async {
                 self.lexicon = lexicon
+                self.usesCompiledLexicon = compiled != nil
                 self.loading = false
-                if text.isEmpty { self.status = "内置码表载入失败。" }
+                if compiled == nil, fallbackText?.isEmpty != false { self.status = "内置码表载入失败。" }
                 if self.preferences.inputScheme != .wubi || !self.pinyinCallbacks.isEmpty { self.preparePinyin() }
             }
         }
@@ -102,23 +106,35 @@ final class LibraryStore: ObservableObject {
         if pinyinReady { completion?(); return }
         if let completion { pinyinCallbacks.append(completion) }
         guard !loading, !pinyinLoading else { return }
+        if usesCompiledLexicon {
+            finishPinyinLoad()
+            return
+        }
         let lexicon = lexicon
         pinyinLoading = true
         DispatchQueue.global(qos: .utility).async {
             let index = lexicon.pinyinIndex()
             DispatchQueue.main.async {
                 self.pinyin = index
-                self.pinyinReady = true
-                self.pinyinLoading = false
-                let callbacks = self.pinyinCallbacks
-                self.pinyinCallbacks.removeAll()
-                callbacks.forEach { $0() }
+                self.finishPinyinLoad()
             }
         }
     }
 
+    private func finishPinyinLoad() {
+        pinyinReady = true
+        pinyinLoading = false
+        let callbacks = pinyinCallbacks
+        pinyinCallbacks.removeAll()
+        callbacks.forEach { $0() }
+    }
+
+    private func pinyinCandidates(_ code: String) -> [Candidate] {
+        usesCompiledLexicon ? lexicon.compiledPinyinCandidates(for: code) : pinyin[code, default: []]
+    }
+
     func candidates(_ mode: Composition.Mode, _ code: String) -> [Candidate] {
-        if mode == .pinyin { return pinyin[code, default: []] }
+        if mode == .pinyin { return pinyinCandidates(code) }
         if code == "zz", preferences.zFunction {
             let symbols = ["※", "—", "…", "·", "✓", "×", "→", "←", "↑", "↓", "★", "☆", "〇", "□", "■", "①", "②", "③"]
             return lexicon.applyingManualOrder(manualOrders[code, default: []], to: symbols.map { Candidate($0) }, code: code)
@@ -134,7 +150,7 @@ final class LibraryStore: ObservableObject {
         }
         if preferences.mixedPinyin {
             let known = Set(words.map(\.word))
-            words += pinyin[code, default: []]
+            words += pinyinCandidates(code)
                 .filter { !known.contains($0.word) && (!preferences.singleCharacters || $0.word.count == 1) }
                 .map { Candidate($0.word, hint: $0.hint, source: .pinyin) }
         }
@@ -333,14 +349,17 @@ final class LibraryStore: ObservableObject {
         }
         for entry in manualByDate { known[entry.word] = entry.code }
         preferredImportCodes = known
-        let canonical = personal + olderPackages.flatMap { group in
-            group.entries.map { entry in Entry(entry.word, known[entry.word] ?? entry.code, weight: entry.weight) }
+        var nextExtras = Dictionary(grouping: personal, by: \.code)
+        for group in olderPackages {
+            for entry in group.entries {
+                let code = known[entry.word] ?? entry.code
+                nextExtras[code, default: []].append(Entry(entry.word, code, weight: entry.weight))
+            }
         }
-        extras = Dictionary(grouping: canonical, by: \.code).mapValues { entries in
-            entries.enumerated().sorted { lhs, rhs in
-                lhs.element.weight == rhs.element.weight ? lhs.offset < rhs.offset : lhs.element.weight > rhs.element.weight
-            }.map(\.element)
+        for code in Array(nextExtras.keys) where (nextExtras[code]?.count ?? 0) > 1 {
+            nextExtras[code]?.sort { $0.weight > $1.weight }
         }
+        extras = nextExtras
         edits = nextEdits
         manualOrders = nextOrders
     }

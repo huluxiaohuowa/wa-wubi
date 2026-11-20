@@ -58,25 +58,24 @@ public final class Lexicon: @unchecked Sendable {
     private let sortedCodes: [String]
     private let fixedWords: Set<String>
     private let existingCodes: [String: String]
+    private let database: LexiconDatabase?
 
     public init(_ entries: [Entry], stems suppliedStems: [String: String] = [:]) {
-        table = Dictionary(grouping: entries, by: \.code).mapValues { rows in
-            rows.enumerated().sorted {
-                $0.element.weight == $1.element.weight ? $0.offset < $1.offset : $0.element.weight > $1.element.weight
-            }.map(\.element)
-        }
+        database = nil
+        table = Dictionary(grouping: entries, by: \.code).mapValues { $0.sorted { $0.weight > $1.weight } }
         sortedCodes = table.keys.sorted()
         fixedWords = Set(Self.roots.values).union(entries.lazy.filter { $0.code.count == 1 }.map(\.word))
-        var canonical: [String: Entry] = [:]
-        for entry in entries {
-            if let current = canonical[entry.word] {
+        var canonical: [String: Int] = [:]
+        for (index, entry) in entries.enumerated() {
+            if let currentIndex = canonical[entry.word] {
+                let current = entries[currentIndex]
                 if entry.code.count < current.code.count { continue }
                 if entry.code.count == current.code.count &&
                     (entry.weight < current.weight || (entry.weight == current.weight && entry.code >= current.code)) { continue }
             }
-            canonical[entry.word] = entry
+            canonical[entry.word] = index
         }
-        existingCodes = canonical.mapValues(\.code)
+        existingCodes = canonical.mapValues { entries[$0].code }
         var stems = suppliedStems
         for entry in entries where entry.word.count == 1 && entry.code.count >= 2 {
             if stems[entry.word, default: ""].count < entry.code.count {
@@ -89,10 +88,33 @@ public final class Lexicon: @unchecked Sendable {
         self.stems = stems
     }
 
+    public init?(compiledAt url: URL) {
+        guard let database = LexiconDatabase(url) else { return nil }
+        self.database = database
+        table = [:]
+        sortedCodes = []
+        stems = [:]
+        existingCodes = [:]
+        fixedWords = Set(Self.roots.values).union(
+            "abcdefghijklmnopqrstuvwxyz".flatMap { database.entries(for: String($0)).map(\.word) }
+        )
+    }
+
+    #if os(macOS)
+    func writeCompiledDatabase(to url: URL) throws {
+        try LexiconDatabase.write(to: url, entries: table, words: existingCodes, stems: stems, pinyin: pinyinIndex())
+    }
+    #endif
+
     public static func bundled(_ text: String) -> Lexicon {
         var rows: [Entry] = []
         var stems: [String: String] = [:]
-        for line in text.split(whereSeparator: \.isNewline) where !line.hasPrefix("#") {
+        var start = text.startIndex
+        while start < text.endIndex {
+            let end = text[start...].firstIndex(where: \.isNewline) ?? text.endIndex
+            let line = text[start..<end]
+            start = end < text.endIndex ? text.index(after: end) : end
+            guard !line.hasPrefix("#") else { continue }
             let fields = line.split(separator: "\t")
             guard fields.count >= 2, Entry.validCode(String(fields[1])) else { continue }
             let word = String(fields[0])
@@ -104,14 +126,18 @@ public final class Lexicon: @unchecked Sendable {
         return Lexicon(rows, stems: stems)
     }
 
-    public func existingCode(for word: String) -> String? { existingCodes[word] }
+    public func existingCode(for word: String) -> String? { database?.code(for: word) ?? existingCodes[word] }
 
     public func fullCode(for word: String) -> String? {
-        if word.count == 1 { return stems[word] }
+        fullCode(for: word) { database?.stem(for: $0) ?? stems[$0] }
+    }
+
+    private func fullCode(for word: String, stem: (String) -> String?) -> String? {
+        if word.count == 1 { return stem(word) }
         let chars = word.map(String.init)
         guard chars.count >= 2 else { return nil }
         let parts = chars.count <= 3 ? chars : Array(chars.prefix(3)) + [chars[chars.count - 1]]
-        let codes = parts.compactMap { stems[$0] }
+        let codes = parts.compactMap(stem)
         guard codes.count == parts.count else { return nil }
         switch codes.count {
         case 2: return String(codes[0].prefix(2)) + String(codes[1].prefix(2))
@@ -122,7 +148,7 @@ public final class Lexicon: @unchecked Sendable {
 
     public func exact(_ code: String, extra: [Entry] = [], edits: [String: WordEdit] = [:],
                       includeContinuations: Bool = true) -> [Candidate] {
-        let base = table[code, default: []]
+        let base = database?.entries(for: code) ?? table[code, default: []]
         let preferred = edits.values.filter { $0.pinned && !$0.hidden }.sorted { $0.word < $1.word }
         var seen = Set<String>()
         var words = (preferred.map(\.word) + base.map(\.word) + extra.map(\.word)).filter {
@@ -159,6 +185,25 @@ public final class Lexicon: @unchecked Sendable {
     private func continuationCandidates(for prefix: String, excluding: Set<String>,
                                         edits: [String: WordEdit]) -> [Candidate] {
         guard (1...3).contains(prefix.count) else { return [] }
+        if let database {
+            var results: [Candidate] = []
+            var code = ""
+            var suffix = ""
+            var seen = Set<String>()
+            database.visitContinuations(for: prefix) { entry in
+                if entry.code != code {
+                    code = entry.code
+                    suffix = String(code.dropFirst(prefix.count))
+                    seen.removeAll(keepingCapacity: true)
+                }
+                if !excluding.contains(entry.word), edits[entry.word]?.hidden != true,
+                   seen.insert(entry.word).inserted {
+                    results.append(Candidate(entry.word, hint: suffix))
+                }
+                return results.count < 72
+            }
+            return results
+        }
         var lower = 0
         var upper = sortedCodes.count
         while lower < upper {
@@ -232,20 +277,32 @@ public final class Lexicon: @unchecked Sendable {
         return result
     }
 
+    /// Looks up one spelling in the bundled database without loading the full index.
+    public func compiledPinyinCandidates(for code: String) -> [Candidate] {
+        database?.pinyinCandidates(for: code) ?? []
+    }
+
     public func pinyinIndex() -> [String: [Candidate]] {
+        if let database { return database.pinyinIndex() }
         var words: [String: Int] = [:]
-        for rows in table.values {
-            for entry in rows.prefix(12) where entry.weight > 0 && entry.word.count <= 6 {
+        func add(_ entry: Entry) {
+            if entry.word.count <= 6 {
                 words[entry.word] = max(words[entry.word, default: 0], entry.weight)
             }
         }
+        for rows in table.values {
+            for entry in rows.prefix(12) where entry.weight > 0 { add(entry) }
+        }
         var index: [String: [Candidate]] = [:]
         for (word, _) in words.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }) {
-            guard let hint = fullCode(for: word),
-                  let latin = word.applyingTransform(.mandarinToLatin, reverse: false) else { continue }
-            let key = latin.replacingOccurrences(of: "ü", with: "v")
-                .folding(options: .diacriticInsensitive, locale: Locale(identifier: "zh"))
-                .lowercased().filter { !$0.isWhitespace }
+            guard let hint = fullCode(for: word, stem: { stems[$0] }) else { continue }
+            let key = autoreleasepool {
+                word.applyingTransform(.mandarinToLatin, reverse: false)?
+                    .replacingOccurrences(of: "ü", with: "v")
+                    .folding(options: .diacriticInsensitive, locale: Locale(identifier: "zh"))
+                    .lowercased().filter { !$0.isWhitespace }
+            }
+            guard let key else { continue }
             guard !key.isEmpty, key.utf8.allSatisfy({ (97...122).contains($0) }) else { continue }
             if index[key, default: []].count < 40 { index[key, default: []].append(Candidate(word, hint: hint)) }
         }

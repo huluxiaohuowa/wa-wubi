@@ -15,6 +15,10 @@ fi
 /usr/bin/unzip -oq Resources/QingjianEnglishGlossary.zip -d "$app/Contents/Resources"
 cp Resources/QingjianEnglishGlossary-NOTICE.txt "$app/Contents/Resources/"
 cp Resources/wubi86.dict.yaml Resources/{GPL-3.0,LGPL-3.0}.txt "$app/Contents/Resources/"
+compiler="$output/compile-mac-lexicon"
+xcrun --sdk macosx swiftc -O -module-cache-path "$output/clang" \
+    Sources/Core/Lexicon.swift Sources/Core/LexiconDatabase.swift script/compile_mobile_lexicon.swift -o "$compiler"
+"$compiler" Resources/wubi86.dict.yaml "$app/Contents/Resources/wubi86.sqlite"
 cp Resources/{InputIcon.png,InputIcon@2x.png,BrandIcon.png,AppIcon.icns} "$app/Contents/Resources/"
 cp -R Resources/zh-Hans.lproj Resources/en.lproj "$app/Contents/Resources/"
 if [[ -n "${WAWUBI_SIGN_IDENTITY:-}" ]]; then
