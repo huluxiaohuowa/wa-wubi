@@ -9,6 +9,8 @@ struct LibrariesScreen: View {
     @State private var adding = false
     @State private var message = ""
     @State private var busy = false
+    @State private var pendingRemovalID: String?
+    @State private var confirmingRemoval = false
 
     var body: some View {
         List {
@@ -18,6 +20,14 @@ struct LibrariesScreen: View {
                         DictionaryEntries(store: store, id: group.id)
                     } label: {
                         LabeledContent(group.name, value: "\(group.entries.count) 条")
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if group.id != "personal" {
+                            Button("删除", systemImage: "trash", role: .destructive) {
+                                pendingRemovalID = group.id
+                                confirmingRemoval = true
+                            }
+                        }
                     }
                 }
             }
@@ -31,6 +41,15 @@ struct LibrariesScreen: View {
         .navigationTitle("词库")
         .toolbar { Button("加词", systemImage: "plus") { adding = true } }
         .sheet(isPresented: $adding) { AddWord(store: store) }
+        .confirmationDialog("移除这个词库？", isPresented: $confirmingRemoval,
+                            presenting: store.libraries.first { $0.id == pendingRemovalID }) { group in
+            Button("移除", role: .destructive) {
+                store.delete(group)
+                Task { await store.sync() }
+            }
+        } message: { group in
+            Text(group.name)
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             guard case let .success(urls) = result else { return }
             Task { await importFiles(urls) }

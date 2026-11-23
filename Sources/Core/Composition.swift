@@ -134,6 +134,8 @@ public struct Composition {
         candidates = []
     }
 
+    public mutating func forgetLastCommit() { last = "" }
+
     public mutating func refresh(_ lookup: (Mode, String) -> [Candidate]) {
         candidates = mode == .english || code.isEmpty ? [] :
             EmojiSuggestions.adding(to: lookup(mode, code), mode: mode, code: code, pageSize: pageSize)

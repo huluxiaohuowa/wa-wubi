@@ -15,6 +15,8 @@ final class InputController: IMKInputController {
     private var continuousLearning = ContinuousPhraseLearning()
     private var learningCaret: NSRange?
     private var shiftPressed = false
+    private var secureInputActive = false
+    private var localInputOnly: Bool { secureInputActive || IsSecureEventInputEnabled() }
     private var pinyinRefreshPending = false
     private var boundLanguage = false
     private var compositionMarked = false
@@ -36,7 +38,7 @@ final class InputController: IMKInputController {
     private var lookup: (Composition.Mode, String) -> [Candidate] {
         let mode = state.mode
         let code = state.code
-        let suggestions = cloudSuggestions
+        let suggestions = localInputOnly ? [] : cloudSuggestions
         return { [store] requestedMode, requestedCode in
             let local = store.candidates(requestedMode, requestedCode)
             guard requestedMode == mode, requestedCode == code, !suggestions.isEmpty else { return local }
@@ -116,21 +118,24 @@ final class InputController: IMKInputController {
         guard let event, let target = sender as? IMKTextInput else { return false }
         if let active = Self.activeController, active !== self { return false }
         if Self.activeController == nil { Self.activeController = self }
-        if IsSecureEventInputEnabled() {
+        // Secure Event Input is system-wide. The active text client can still deliver
+        // events to its input method while a different process enables the protection.
+        let secureInput = IsSecureEventInputEnabled()
+        if secureInputActive != secureInput {
+            secureInputActive = secureInput
             phraseLearning.reset()
             resetContinuousLearning()
             clearCloud()
             precedingText = ""
-            if state.active { state.reset() }
+            state.reset()
+            state.forgetLastCommit()
             setCompositionMark(false, in: target)
             consumedKeyDowns.removeAll()
             shiftPressed = false
             stopSpeech()
-            CandidatePanel.shared.hide(for: self)
-            return false
         }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
-        let handledBySpeech = handleSpeechShortcut(event, flags: flags, target: target)
+        let handledBySpeech = !secureInput && handleSpeechShortcut(event, flags: flags, target: target)
         if event.type == .flagsChanged { return modifiers(event, flags: flags, target: target) }
         if event.type == .keyUp {
             let consumed = consumedKeyDowns.remove(event.keyCode) != nil
@@ -151,7 +156,7 @@ final class InputController: IMKInputController {
             resetContinuousLearning()
             invalidateCloudContext()
         }
-        if flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
+        if !localInputOnly, flags.contains(.control), shortcut(event, flags: flags, target: target) { return true }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty { return false }
         if !state.english, store.preferences.inputScheme != .wubi || (event.keyCode == 50 && !state.active) {
             warmPinyin()
@@ -164,13 +169,14 @@ final class InputController: IMKInputController {
             return false
         }
         if store.loading && !state.english { return false }
+        let learns = !localInputOnly
         if key == .backspace || key == .escape || state.english ||
             (!state.active && learningCaret.map { $0 != target.selectedRange() } == true) {
             resetContinuousLearning()
         }
         let oldCode = state.code
         let oldMode = state.mode
-        let previous = store.preferences.learnsPhrases == true && !store.preferences.singleCharacters ? state : nil
+        let previous = learns && store.preferences.learnsPhrases == true && !store.preferences.singleCharacters ? state : nil
         let result: Composition.Result
         if store.preferences.zFunction, state.code == "z", key == .space, !state.last.isEmpty {
             let word = state.last
@@ -215,7 +221,7 @@ final class InputController: IMKInputController {
               (2...32).contains(state.code.count),
               state.code.utf8.allSatisfy({ (97...122).contains($0) }),
               target.bundleIdentifier() != Bundle.main.bundleIdentifier,
-              !IsSecureEventInputEnabled() else { return }
+              !localInputOnly else { return }
         let code = state.code
         let mode = state.mode
         let pinyin = mode == .pinyin || (store.preferences.mixedPinyin && code.count > 4) ? code : nil
@@ -242,7 +248,7 @@ final class InputController: IMKInputController {
 
     private func scheduleGlosses(at target: IMKTextInput) {
         let config = CloudPredictionConfiguration.current
-        guard LanguageLearning.isEnabled, !IsSecureEventInputEnabled() else { return }
+        guard LanguageLearning.isEnabled, !localInputOnly else { return }
         let words = localChineseWords(state.visible, exactOnly: false, limit: state.pageSize)
         guard words != glossRequest else { return }
         glossTask?.cancel()
@@ -257,7 +263,7 @@ final class InputController: IMKInputController {
             let offline = await LanguageLearning.offlineTranslations(for: words, language: language)
             guard let self, !Task.isCancelled, LanguageLearning.isEnabled,
                   Self.activeController === self, self.state.active, !self.state.english,
-                  !IsSecureEventInputEnabled(), CloudPredictionConfiguration.current == config,
+                  !self.localInputOnly, CloudPredictionConfiguration.current == config,
                   self.glossRequest == words else { return }
             if !offline.isEmpty {
                 self.glosses = offline
@@ -282,7 +288,7 @@ final class InputController: IMKInputController {
 
     private func canShowCloud(at target: IMKTextInput, selection: NSRange, config: CloudPredictionConfiguration) -> Bool {
         Self.activeController === self && state.active && !state.english && !speaking &&
-            !IsSecureEventInputEnabled() && target.selectedRange() == selection &&
+            !localInputOnly && target.selectedRange() == selection &&
             CloudPredictionConfiguration.current == config
     }
 
@@ -314,7 +320,7 @@ final class InputController: IMKInputController {
     }
 
     private func recordLearnedPhrase(_ result: Composition.Result) {
-        guard store.preferences.learnsPhrases == true, !store.preferences.singleCharacters else {
+        guard !localInputOnly, store.preferences.learnsPhrases == true, !store.preferences.singleCharacters else {
             phraseLearning.reset()
             return
         }
@@ -328,7 +334,7 @@ final class InputController: IMKInputController {
 
     private func recordContinuousPhrases(_ result: Composition.Result, at target: IMKTextInput) {
         guard store.preferences.learnsContinuousPhrases == true, !store.preferences.singleCharacters,
-              state.mode == .wubi, !state.english, !IsSecureEventInputEnabled() else {
+              state.mode == .wubi, !state.english, !localInputOnly else {
             resetContinuousLearning()
             return
         }
@@ -370,7 +376,8 @@ final class InputController: IMKInputController {
         speechShortcut = shortcut
         let hold = DispatchWorkItem { [weak self] in
             guard let self, Self.activeController === self, self.speechShortcut == shortcut,
-                  self.store.speech.enabled, self.store.speech.shortcut == shortcut else { return }
+                  !self.localInputOnly, self.store.speech.enabled,
+                  self.store.speech.shortcut == shortcut else { return }
             self.speechHold = nil
             self.startSpeech(target)
         }
@@ -407,11 +414,12 @@ final class InputController: IMKInputController {
         let origin = caret(target)
         let selection = target.selectedRange()
         speech.begin(store.speech) { [weak self] text in
-            guard let self, Self.activeController === self else { return }
+            guard let self, Self.activeController === self, !self.localInputOnly else { return }
             self.statusText = text
             self.draw(target)
         } completed: { [weak self] result in
             guard let self, Self.activeController === self else { return }
+            guard !self.localInputOnly else { self.stopSpeech(); return }
             if case .failure(let error) = result, let pane = (error as? SpeechError)?.privacyPane {
                 self.stopSpeech()
                 Self.showSpeechPermission(name: pane.name, anchor: pane.anchor)
@@ -544,7 +552,8 @@ final class InputController: IMKInputController {
     }
 
     private func edit(_ index: Int, target: IMKTextInput, hide: Bool) {
-        guard state.mode == .wubi, state.visible.indices.contains(index), state.visible[index].isDictionaryEditable else { return }
+        guard !localInputOnly, state.mode == .wubi, state.visible.indices.contains(index),
+              state.visible[index].isDictionaryEditable else { return }
         store.edit(state.code, state.visible[index].word, pinned: !hide, hidden: hide)
         resetContinuousLearning()
         clearCloud()
@@ -553,7 +562,7 @@ final class InputController: IMKInputController {
     }
 
     private func moveCandidate(from source: Int, to destination: Int, target: IMKTextInput) {
-        guard Self.activeController === self, state.mode == .wubi else { return }
+        guard Self.activeController === self, !localInputOnly, state.mode == .wubi else { return }
         let offset = state.page * state.pageSize
         guard state.visible.indices.contains(source), state.visible.indices.contains(destination) else { return }
         guard let order = store.lexicon.manualOrder(in: state.candidates, code: state.code,
@@ -568,7 +577,12 @@ final class InputController: IMKInputController {
         let value = store.preferences.traditional ?
             result.text.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? result.text : result.text
         compositionMarked = false
+        let localOnly = localInputOnly
         target.insertText(value, replacementRange: replacement)
+        if localOnly {
+            state.forgetLastCommit()
+            return
+        }
         store.record(result.selections)
         if CloudPredictionConfiguration.current.enabled {
             precedingText = String((precedingText + value).suffix(80))
@@ -631,22 +645,26 @@ final class InputController: IMKInputController {
             return
         }
         let offset = state.page * state.pageSize
-        let movable = statusText == nil && state.mode == .wubi ? Set(state.visible.indices.filter { index in
+        let canEdit = !localInputOnly && state.mode == .wubi
+        let movable = statusText == nil && canEdit ? Set(state.visible.indices.filter { index in
             store.lexicon.canMoveCandidate(state.visible[index], at: offset + index, code: state.code)
         }) : []
         let view = CandidateStrip(code: label, candidates: candidates, current: state.selected,
                                   page: state.page, pages: state.pageCount, preferences: store.preferences,
                                   translations: translations,
                                   choose: { [weak self] index in
-            guard let self, Self.activeController === self, !IsSecureEventInputEnabled() else { return }
-            let result = self.state.accept(index: index, fallback: false)
+            guard let self, Self.activeController === self else { return }
+            let visible = self.state.visible
+            let localOnly = self.localInputOnly
+            guard visible.indices.contains(index), !localOnly || !visible[index].isCloud else { return }
+            let result = self.state.accept(index: index, fallback: false, allowCloud: !localOnly)
             self.apply(result, to: target)
             self.recordLearnedPhrase(result)
             self.recordContinuousPhrases(result, at: target)
             self.clearCloud()
             self.draw(target)
-        }, pin: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: false) } : nil,
-           hide: state.mode == .wubi ? { [weak self] in self?.edit($0, target: target, hide: true) } : nil,
+        }, pin: canEdit ? { [weak self] in self?.edit($0, target: target, hide: false) } : nil,
+           hide: canEdit ? { [weak self] in self?.edit($0, target: target, hide: true) } : nil,
            changePage: { [weak self] delta in
             guard let self, Self.activeController === self else { return }
             _ = self.state.handle(delta > 0 ? .next : .previous, preferences: self.store.preferences, lookup: self.lookup)
