@@ -134,7 +134,7 @@ struct CandidateStrip: View {
         let number = Text("\(index + 1)").font(.system(size: 10, weight: .medium, design: .monospaced))
         let word = candidate.isEmojiSuggestion
             ? Text(candidate.word).font(.system(size: preferences.fontSize))
-            : Text(CandidateFont.label(candidate.word, size: preferences.fontSize))
+            : Text(CandidateFont.label(candidate.word, size: preferences.fontSize, traditional: preferences.traditional))
         let code = Text(candidate.hint).font(.system(size: 10, design: .monospaced)).lineLimit(1)
         let translation = translation(at: index)
         let definition = Text(translation.isEmpty ? " " : translation)

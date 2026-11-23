@@ -61,4 +61,4 @@ macOS 26 或更新版本可能要求已公证的输入法参与系统注册。�
 
 [内置 86 五笔码表](https://github.com/rime/rime-wubi/tree/152a0d3f3efe40cae216d1e3b338242446848d07) 原样收录，保留作者署名和 [LGPL-3.0](Resources/LGPL-3.0.txt)、[GPL-3.0](Resources/GPL-3.0.txt) 原文。运行时由本项目 Swift 引擎加载文本码表。在线包的来源和许可见 [词库目录](https://github.com/huluxiaohuowa/wawubi-web/tree/main/dictionaries)。
 
-候选窗使用随包分发的 WA Wubi Han 无衬线字体，基于 [Scriptwide Sans CJK v1.004](https://github.com/scriptwide-fonts/scriptwide-sans-cjk/releases/tag/v1.004)，覆盖内置码表和符号入口的所有字符。字体按随包附带的 SIL Open Font License 1.1 分发。
+候选窗优先用 macOS 苹方简体显示汉字，输简出繁时优先用苹方繁体。随包的 WA Wubi Han 无衬线字体补齐缺字，覆盖内置码表和符号入口的所有字符。该字体基于 [Scriptwide Sans CJK v1.004](https://github.com/scriptwide-fonts/scriptwide-sans-cjk/releases/tag/v1.004)，按随包附带的 SIL Open Font License 1.1 分发。
