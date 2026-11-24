@@ -7,6 +7,7 @@ import WubiCore
 final class InputController: IMKInputController {
     private static weak var activeController: InputController?
     private static var english = false
+    private static var shiftTap = ShiftTap()
     private static var showingSpeechPermission = false
     private let store = LibraryStore.shared
     private let speech = SpeechCapture()
@@ -14,7 +15,6 @@ final class InputController: IMKInputController {
     private var phraseLearning = PhraseLearning()
     private var continuousLearning = ContinuousPhraseLearning()
     private var learningCaret: NSRange?
-    private var shiftPressed = false
     private var secureInputActive = false
     private var localInputOnly: Bool { secureInputActive || IsSecureEventInputEnabled() }
     private var pinyinRefreshPending = false
@@ -52,23 +52,16 @@ final class InputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
-        Self.activeController = self
-        phraseLearning.reset()
-        resetContinuousLearning()
-        precedingText = ""
-        let appID = (sender as? IMKTextInput)?.bundleIdentifier() ??
-            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        consumedKeyDowns.removeAll()
-        let language = appID.flatMap { store.preferences.appRules[$0]?.language }
-        boundLanguage = language != nil
-        let english = language.map { $0 == .english } ?? Self.english
-        if state.english != english { _ = state.toggleEnglish() }
-        shiftPressed = false
+        if Self.activeController !== self {
+            takeInputFocus(appID: (sender as? IMKTextInput)?.bundleIdentifier() ??
+                           NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        }
         super.activateServer(sender)
         if observation == nil {
             observation = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
             ) { [weak self] _ in
+                Self.shiftTap.cancel()
                 self?.stopSpeech()
                 self?.invalidateCloudContext()
                 self?.resetContinuousLearning()
@@ -81,13 +74,25 @@ final class InputController: IMKInputController {
         }
     }
 
+    private func takeInputFocus(appID: String?) {
+        Self.activeController = self
+        phraseLearning.reset()
+        resetContinuousLearning()
+        clearCloud()
+        precedingText = ""
+        consumedKeyDowns.removeAll()
+        let language = appID.flatMap { store.preferences.appRules[$0]?.language }
+        boundLanguage = language != nil
+        let english = language.map { $0 == .english } ?? Self.english
+        if state.english != english { _ = state.toggleEnglish() }
+    }
+
     override func deactivateServer(_ sender: Any!) {
         stopSpeech()
         clearCloud()
         precedingText = ""
         phraseLearning.reset()
         resetContinuousLearning()
-        shiftPressed = false
         if let target = sender as? IMKTextInput {
             if state.active { apply(state.accept(index: state.selected, allowCloud: false), to: target) }
             setCompositionMark(false, in: target)
@@ -116,8 +121,19 @@ final class InputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let target = sender as? IMKTextInput else { return false }
-        if let active = Self.activeController, active !== self { return false }
-        if Self.activeController == nil { Self.activeController = self }
+        if Self.activeController !== self {
+            guard event.type != .keyUp else { return false }
+            let appID = target.bundleIdentifier()
+            if Self.activeController != nil {
+                // IMK can send the first event before its activation callback during a reconnect.
+                guard let appID, appID == NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                      let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                      let bundle = TISGetInputSourceProperty(source, kTISPropertyBundleID),
+                      Unmanaged<CFString>.fromOpaque(bundle).takeUnretainedValue() as String == Bundle.main.bundleIdentifier
+                else { return false }
+            }
+            takeInputFocus(appID: appID)
+        }
         // Secure Event Input is system-wide. The active text client can still deliver
         // events to its input method while a different process enables the protection.
         let secureInput = IsSecureEventInputEnabled()
@@ -131,7 +147,6 @@ final class InputController: IMKInputController {
             state.forgetLastCommit()
             setCompositionMark(false, in: target)
             consumedKeyDowns.removeAll()
-            shiftPressed = false
             stopSpeech()
         }
         let flags = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
@@ -149,7 +164,7 @@ final class InputController: IMKInputController {
     }
 
     private func handleKeyDown(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
-        shiftPressed = false
+        Self.shiftTap.cancel()
         if speechShortcut != nil || speaking || statusText != nil { stopSpeech() }
         if !flags.intersection([.control, .option, .command, .function]).isEmpty {
             phraseLearning.reset()
@@ -351,7 +366,7 @@ final class InputController: IMKInputController {
 
     private func handleSpeechShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         if let held = speechShortcut {
-            shiftPressed = false
+            Self.shiftTap.cancel()
             let releasedKey = event.type == .keyUp && held.keyCode == event.keyCode
             if releasedKey || (event.type == .flagsChanged && !flags.contains(held.flags)) {
                 speechHold?.cancel()
@@ -372,7 +387,7 @@ final class InputController: IMKInputController {
         } else {
             guard event.type == .flagsChanged else { return false }
         }
-        shiftPressed = false
+        Self.shiftTap.cancel()
         speechShortcut = shortcut
         let hold = DispatchWorkItem { [weak self] in
             guard let self, Self.activeController === self, self.speechShortcut == shortcut,
@@ -389,10 +404,15 @@ final class InputController: IMKInputController {
     private func modifiers(_ event: NSEvent, flags: NSEvent.ModifierFlags, target: IMKTextInput) -> Bool {
         guard speechShortcut == nil else { return false }
         let isShift = event.keyCode == 56 || event.keyCode == 60
-        guard isShift, store.preferences.shiftToggle else { shiftPressed = false; return false }
-        if flags == [.shift] { shiftPressed = true; return false }
-        defer { shiftPressed = false }
-        if flags.isEmpty && shiftPressed {
+        guard isShift, store.preferences.shiftToggle else { Self.shiftTap.cancel(); return false }
+        let appID = target.bundleIdentifier()
+        let session = ObjectIdentifier(self)
+        if flags == [.shift] {
+            Self.shiftTap.begin(key: event.keyCode, app: appID, session: session, time: event.timestamp)
+            return false
+        }
+        guard flags.isEmpty else { Self.shiftTap.cancel(); return false }
+        if Self.shiftTap.end(key: event.keyCode, app: appID, session: session, time: event.timestamp) {
             phraseLearning.reset()
             resetContinuousLearning()
             invalidateCloudContext()
